@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:waiting_room_app/models/client.dart';
+import 'package:waiting_room_app/models/sync_status.dart';
 import 'package:waiting_room_app/services/local_queue_service.dart';
 
 void main() {
@@ -8,34 +9,53 @@ void main() {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
   late LocalQueueService local;
-  late dynamic db;
 
   setUp(() async {
-    db = await databaseFactory.openDatabase(inMemoryDatabasePath);
-    await db.execute('''CREATE TABLE local_clients (id TEXT PRIMARY KEY, name TEXT NOT NULL, lat REAL, lng REAL, created_at TEXT NOT NULL, is_synced INTEGER NOT NULL DEFAULT 0, pending_delete INTEGER NOT NULL DEFAULT 0)''');
-    local = LocalQueueService(providedDatabase: db);
+    local = LocalQueueService(inMemory: true);
+    await local.database;
   });
 
   tearDown(() async {
-    await db.close();
     await local.close();
   });
 
-  Client client(String id, DateTime created, {bool synced = false}) => Client(id: id, name: id, createdAt: created, isSynced: synced);
+  Client client(
+    String id,
+    DateTime created, {
+    bool synced = false,
+    SyncStatus? syncStatus,
+  }) =>
+      Client(
+        id: id,
+        name: id,
+        createdAt: created,
+        syncStatus: syncStatus ?? (synced ? SyncStatus.synced : SyncStatus.pending),
+      );
 
   test('insert and order visible clients by created_at, excluding pending deletes', () async {
     await local.insertClientLocally(client('b', DateTime.utc(2026, 1, 2)));
     await local.insertClientLocally(client('a', DateTime.utc(2026, 1, 1)));
-    await local.insertClientLocally(client('deleted', DateTime.utc(2026, 1, 3)).copyWith(pendingDelete: true));
+    await local.insertClientLocally(
+      client('deleted', DateTime.utc(2026, 1, 3)).copyWith(pendingDelete: true),
+    );
     final clients = await local.getClients();
     expect(clients.map((c) => c.id), ['a', 'b']);
   });
 
-  test('gets unsynced and marks synced', () async {
-    await local.insertClientLocally(client('one', DateTime.utc(2026)));
-    expect((await local.getUnsyncedClients()).map((c) => c.id), ['one']);
+  test('gets pending and failed clients for retry and marks synced', () async {
+    await local.insertClientLocally(client('one', DateTime.utc(2026, 1, 1)));
+    await local.insertClientLocally(
+      client('two', DateTime.utc(2026, 1, 2), syncStatus: SyncStatus.failed),
+    );
+    await local.insertClientLocally(
+      client('three', DateTime.utc(2026, 1, 3), syncStatus: SyncStatus.syncing),
+    );
+
+    expect((await local.getPendingClients()).map((c) => c.id), ['one', 'two']);
+
     await local.markClientAsSynced('one');
-    expect(await local.getUnsyncedClients(), isEmpty);
+    await local.updateSyncStatus('two', SyncStatus.synced);
+    expect(await local.getPendingClients(), isEmpty);
   });
 
   test('marks pending delete and lists it', () async {

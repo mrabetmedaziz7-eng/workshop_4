@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/client.dart';
+import '../models/sync_status.dart';
 import '../theme/app_theme.dart';
 
 class ClientTile extends StatelessWidget {
@@ -195,9 +196,9 @@ class ClientTile extends StatelessWidget {
                         const SizedBox(width: 4),
                         Flexible(
                           child: Text(
-                            client.lat != null && client.lng != null
-                                ? '📍 ${client.lat!.toStringAsFixed(4)}, ${client.lng!.toStringAsFixed(4)}'
-                                : '📍 Location not captured',
+                            client.hasLocation && client.locationAccuracy != null
+                                ? '📍 ${client.locationText} (±${client.locationAccuracy!.round()}m)'
+                                : '📍 ${client.locationText}',
                             style: theme.textTheme.bodyMedium?.copyWith(fontSize: 12),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -205,41 +206,9 @@ class ClientTile extends StatelessWidget {
                         ),
                       ],
                     ),
-                    if (!client.isSynced) ...[
+                    if (client.syncStatus != SyncStatus.synced) ...[
                       const SizedBox(height: AppSpacing.xs),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: AppColors.warning.withAlpha(isDark ? 35 : 25),
-                          borderRadius: AppRadius.pillRadius,
-                          border: Border.all(
-                            color: AppColors.warning.withAlpha(90),
-                            width: 0.8,
-                          ),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.cloud_off_rounded,
-                              size: 13,
-                              color: AppColors.warning,
-                            ),
-                            SizedBox(width: 4),
-                            Text(
-                              'Waiting to sync',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.warning,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+                      _SyncStatusBadge(status: client.syncStatus, isDark: isDark),
                     ],
                   ],
                 ),
@@ -259,6 +228,76 @@ class ClientTile extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _SyncStatusBadge extends StatelessWidget {
+  final SyncStatus status;
+  final bool isDark;
+
+  const _SyncStatusBadge({
+    required this.status,
+    required this.isDark,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final (label, color, icon) = switch (status) {
+      SyncStatus.pending => (
+          'Waiting to sync',
+          AppColors.warning,
+          Icons.cloud_off_rounded,
+        ),
+      SyncStatus.syncing => (
+          'Syncing...',
+          AppColors.secondary,
+          Icons.sync_rounded,
+        ),
+      SyncStatus.failed => (
+          'Sync failed · will retry',
+          AppColors.error,
+          Icons.error_outline_rounded,
+        ),
+      SyncStatus.synced => (
+          'Synced',
+          AppColors.accent,
+          Icons.cloud_done_rounded,
+        ),
+    };
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: 8,
+        vertical: 2,
+      ),
+      decoration: BoxDecoration(
+        color: color.withAlpha(isDark ? 35 : 25),
+        borderRadius: AppRadius.pillRadius,
+        border: Border.all(
+          color: color.withAlpha(90),
+          width: 0.8,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            icon,
+            size: 13,
+            color: color,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
+        ],
       ),
     );
   }

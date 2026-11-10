@@ -14,7 +14,13 @@ class _OnlineConnectivity implements ConnectivityService {
   @override
   Stream<bool> get onlineChanges => _controller.stream;
   @override
+  Stream<bool> get networkChanges => _controller.stream;
+  @override
   Future<bool> get isOnline async => true;
+  @override
+  Future<bool> hasNetwork() async => true;
+  @override
+  Future<bool> isSupabaseAvailable() async => true;
   void dispose() => _controller.close();
 }
 
@@ -42,6 +48,10 @@ class _InMemoryRepo implements ClientsRepository {
   }
 
   @override
+  Future<List<Client>> fetchPage({required int offset, required int limit}) async =>
+      List.unmodifiable(items);
+
+  @override
   Future<void> insert(String name) async {}
 
   @override
@@ -49,6 +59,12 @@ class _InMemoryRepo implements ClientsRepository {
     items.removeWhere((c) => c.id == client.id);
     items.add(client.copyWith(isSynced: true));
     _controller.add(List.unmodifiable(items));
+  }
+
+  @override
+  Future<Client> registerOnServer(Client client) async {
+    await upsert(client);
+    return client.copyWith(isSynced: true);
   }
 
   @override
@@ -60,11 +76,11 @@ class _InMemoryRepo implements ClientsRepository {
   void dispose() => _controller.close();
 }
 
-Position _position(double lat, double lng) => Position(
+Position _position(double lat, double lng, {double accuracy = 10.0}) => Position(
       longitude: lng,
       latitude: lat,
       timestamp: DateTime.utc(2026, 1, 1),
-      accuracy: 10.0,
+      accuracy: accuracy,
       altitude: 0.0,
       altitudeAccuracy: 0.0,
       heading: 0.0,
@@ -89,14 +105,14 @@ void main() {
     connectivity = _OnlineConnectivity();
     geo = _ConfigurableGeolocation();
     repo = _InMemoryRepo();
-    provider = QueueProvider(
+    provider = QueueProvider.withServices(
       repository: repo,
       localQueueService: local,
       connectivityService: connectivity,
       geolocationService: geo,
       uuidGenerator: () => 'geo-uuid-1',
     );
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    await provider.initialized;
   });
 
   tearDown(() async {
@@ -106,17 +122,20 @@ void main() {
     await local.close();
   });
 
-  test('addClient captures valid coordinates from GeolocationService', () async {
-    geo.positionToReturn = _position(36.8065, 10.1815);
+  test('addClient captures valid coordinates, accuracy, and timestamp from GeolocationService', () async {
+    geo.positionToReturn = _position(36.8065, 10.1815, accuracy: 8.5);
 
     final added = await provider.addClient('Tunis Client');
-    await Future<void>.delayed(const Duration(milliseconds: 40));
+    await provider.sync();
 
     expect(added, isTrue);
     expect(provider.clients.single.lat, 36.8065);
     expect(provider.clients.single.lng, 10.1815);
+    expect(provider.clients.single.locationAccuracy, 8.5);
+    expect(provider.clients.single.locationCapturedAt, isNotNull);
     expect(repo.items.single.lat, 36.8065);
     expect(repo.items.single.lng, 10.1815);
+    expect(repo.items.single.locationAccuracy, 8.5);
   });
 
   test('addClient stores null coordinates when GeolocationService returns null', () async {
@@ -128,6 +147,7 @@ void main() {
     expect(added, isTrue);
     expect(provider.clients.single.lat, isNull);
     expect(provider.clients.single.lng, isNull);
+    expect(provider.clients.single.locationAccuracy, isNull);
   });
 
   test('addClient rejects (0, 0) coordinates and stores null instead', () async {

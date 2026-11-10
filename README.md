@@ -1,6 +1,6 @@
-# 🕒 Offline-First Waiting Room App
+# 🕒 Resilient Offline-First Waiting Room App
 
-A modern, offline-first Waiting Room Flutter application powered by **SQLite (`sqflite`)**, **Geolocator**, **Connectivity Plus**, **Supabase Realtime**, and **Provider** (`ChangeNotifier`).
+A modern, offline-first Waiting Room Flutter application powered by **SQLite (`sqflite`)**, **Geolocator**, **Connectivity Plus**, **Supabase Realtime & RPC**, and **Provider** (`ChangeNotifier`).
 
 > **Platform Note (SQLite on Android / iOS; In-Memory Fallback on Chrome):** Because `sqflite` and `path_provider` do not support Flutter Web, persistent SQLite offline storage targets **Android** (and iOS). On **Chrome (Web)**, `LocalQueueService` automatically uses a pure-Dart in-memory store (`kIsWeb`) so the app runs cleanly for live Supabase Realtime and browser testing (data resets on page refresh). Unit tests run on desktop via `sqflite_common_ffi`.
 
@@ -8,20 +8,21 @@ A modern, offline-first Waiting Room Flutter application powered by **SQLite (`s
 
 ## 📖 Features
 
-- **Offline-First Local Queue (`sqflite`)**:
-  - Clients are persisted locally first in `local_clients` with a client-generated UUID v4, so adding and removing clients works immediately with zero network dependency.
-  - Unsynced rows display a **"Waiting to sync"** badge until uploaded to Supabase.
-  - Offline banner (`Offline · changes will sync when connected`) and AppBar status pill (`Offline` / `Syncing...` / `Realtime`) keep connection state clear.
-- **Automatic Bidirectional Sync & Realtime**:
-  - Loads cached local rows immediately on startup, syncs pending changes, and subscribes to Supabase Realtime (`stream(primaryKey: ['id'])`).
-  - Automatically syncs pending inserts (`upsert`) and pending deletes (`delete`) when connectivity returns.
-  - Concurrent sync runs are guarded, and individual item failures are logged without blocking remaining items.
+- **Offline-First Local Queue (`sqflite` v2) & `SyncService`**:
+  - Clients are persisted locally first in `local_clients` with a client-generated UUID v4 and explicit `SyncStatus` (`pending`, `syncing`, `synced`, `failed`).
+  - Failed sync attempts are marked `failed` and automatically retried alongside `pending` entries on the next sync.
+  - Unsynced rows display a status badge (`Waiting to sync`, `Syncing...`, or `Sync failed · will retry`) until uploaded to Supabase.
+- **Network vs. Backend Availability Monitoring (`ConnectivityProvider`)**:
+  - Distinguishes **device offline** (`No network connection`) from **backend unreachable** (`Waiting-room server unavailable`) with a 700ms debounced Supabase reachability check (`AppConnectivity`: `checking`, `online`, `offline`, `backendUnavailable`).
+- **Pagination, Realtime Deduplication & Server RPC**:
+  - `QueueProvider` exposes `QueueState` (`initial`, `loading`, `loaded`, `empty`, `refreshing`, `loadingMore`, `error`), `fetchInitialQueue()`, `loadMore()`, and `handleRealtimeInsert()` deduplication.
+  - `ClientsRepository.registerOnServer` calls the `register_queue_client` PostgreSQL RPC (with automatic fallback to core `upsert` if optional Workshop 6 SQL columns/RPC are not yet applied in Supabase).
 - **Geolocation Tagging (`geolocator`)**:
-  - Captures device coordinates (`lat`, `lng`) with a 10-second timeout and `LocationAccuracy.low`.
-  - Displays `📍 lat, lng` formatted to 4 decimal places on each tile, or `📍 Location not captured` if permissions/services are unavailable (rejects invalid `(0, 0)` coordinates).
+  - Captures device coordinates (`lat`, `lng`) and accuracy (`location_accuracy_m`) with a 10-second timeout (`LocationAccuracy.medium`).
+  - Displays `📍 lat, lng (±Xm)` formatted to 4 decimal places on each tile, or `📍 Location not captured` if permissions/services are unavailable (rejects invalid `(0, 0)` coordinates).
 - **Queue Management & Material 3 UI**:
   - Add clients with auto-trimming, highlight `#1` **Now Serving**, advance with **Next Client**, or remove any client (online or offline).
-  - Clean empty, loading, and error states with pull-to-refresh / retry support.
+  - Dedicated `OfflineBanner`, `LoadingWidget`, `EmptyStateWidget`, error state, and pull-to-refresh / retry support.
 
 ---
 
@@ -116,7 +117,33 @@ SUPABASE_URL=https://your-project-ref.supabase.co
 SUPABASE_ANON_KEY=your-supabase-publishable-anon-key
 ```
 
-### 3. Install Dependencies, Analyze & Test
+### 3. Optional Supabase SQL Upgrade (Workshop 6)
+If you want to store `location_accuracy_m` / `location_captured_at` and use the `register_queue_client` RPC in Supabase, run this in the Supabase SQL Editor (the app falls back automatically to core columns if omitted):
+```sql
+ALTER TABLE public.clients
+ADD COLUMN IF NOT EXISTS location_accuracy_m DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS location_captured_at TIMESTAMPTZ;
+
+CREATE OR REPLACE FUNCTION register_queue_client(
+  p_id UUID,
+  p_name TEXT,
+  p_lat DOUBLE PRECISION,
+  p_lng DOUBLE PRECISION,
+  p_accuracy DOUBLE PRECISION,
+  p_created_at TIMESTAMPTZ
+)
+RETURNS SETOF public.clients AS $$
+BEGIN
+  RETURN QUERY
+  INSERT INTO public.clients (id, name, lat, lng, location_accuracy_m, created_at)
+  VALUES (p_id, p_name, p_lat, p_lng, p_accuracy, p_created_at)
+  ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name
+  RETURNING *;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+```
+
+### 4. Install Dependencies, Analyze & Test
 ```bash
 flutter pub get
 flutter analyze

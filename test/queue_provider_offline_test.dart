@@ -2,7 +2,9 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:waiting_room_app/models/app_connectivity.dart';
 import 'package:waiting_room_app/models/client.dart';
+import 'package:waiting_room_app/models/sync_status.dart';
 import 'package:waiting_room_app/queue_provider.dart';
 import 'package:waiting_room_app/repositories/clients_repository.dart';
 import 'package:waiting_room_app/services/connectivity_service.dart';
@@ -12,8 +14,9 @@ import 'package:waiting_room_app/services/local_queue_service.dart';
 class ControllableConnectivity implements ConnectivityService {
   final _controller = StreamController<bool>.broadcast();
   bool online;
+  bool supabaseReachable;
 
-  ControllableConnectivity({this.online = false});
+  ControllableConnectivity({this.online = false, this.supabaseReachable = true});
 
   void setOnline(bool value) {
     online = value;
@@ -24,7 +27,16 @@ class ControllableConnectivity implements ConnectivityService {
   Stream<bool> get onlineChanges => _controller.stream;
 
   @override
+  Stream<bool> get networkChanges => _controller.stream;
+
+  @override
   Future<bool> get isOnline async => online;
+
+  @override
+  Future<bool> hasNetwork() async => online;
+
+  @override
+  Future<bool> isSupabaseAvailable() async => supabaseReachable;
 
   void dispose() => _controller.close();
 }
@@ -58,6 +70,13 @@ class TrackingClientsRepository implements ClientsRepository {
   }
 
   @override
+  Future<List<Client>> fetchPage({required int offset, required int limit}) async {
+    if (offset >= remoteClients.length) return [];
+    final end = (offset + limit).clamp(0, remoteClients.length);
+    return List.unmodifiable(remoteClients.sublist(offset, end));
+  }
+
+  @override
   Future<void> insert(String name) async {}
 
   @override
@@ -72,6 +91,12 @@ class TrackingClientsRepository implements ClientsRepository {
     remoteClients.removeWhere((c) => c.id == client.id);
     remoteClients.add(client.copyWith(isSynced: true));
     _controller.add(List.unmodifiable(remoteClients));
+  }
+
+  @override
+  Future<Client> registerOnServer(Client client) async {
+    await upsert(client);
+    return client.copyWith(isSynced: true);
   }
 
   @override
@@ -100,20 +125,24 @@ void main() {
 
   Future<QueueProvider> createProvider({
     bool online = false,
+    bool supabaseReachable = true,
     LocalQueueService? existingLocal,
   }) async {
     local = existingLocal ?? LocalQueueService(inMemory: true);
-    connectivity = ControllableConnectivity(online: online);
+    connectivity = ControllableConnectivity(
+      online: online,
+      supabaseReachable: supabaseReachable,
+    );
     repository = TrackingClientsRepository();
     idCounter = 0;
-    final p = QueueProvider(
+    final p = QueueProvider.withServices(
       repository: repository,
       localQueueService: local,
       connectivityService: connectivity,
       geolocationService: NullGeolocation(),
       uuidGenerator: () => 'uuid-${++idCounter}',
     );
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    await p.initialized;
     return p;
   }
 
@@ -139,8 +168,20 @@ void main() {
 
     expect(provider.isLoading, isFalse);
     expect(provider.isOnline, isFalse);
+    expect(provider.connectivityStatus, AppConnectivity.offline);
     expect(provider.clients.map((c) => c.name), ['Cached Client']);
     expect(provider.clients.first.isSynced, isFalse);
+  });
+
+  test('distinguishes backendUnavailable when device has network but Supabase fails', () async {
+    provider = await createProvider(online: true, supabaseReachable: false);
+
+    expect(provider.isOnline, isFalse);
+    expect(provider.connectivityStatus, AppConnectivity.backendUnavailable);
+
+    await provider.addClient('Queued Offline');
+    expect(provider.clients.single.syncStatus, SyncStatus.pending);
+    expect(repository.upsertedIds, isEmpty);
   });
 
   test('addClient while offline saves locally with uuid, updates UI, skips remote', () async {
@@ -152,7 +193,7 @@ void main() {
     expect(provider.clients.length, 1);
     expect(provider.clients.first.id, 'uuid-1');
     expect(provider.clients.first.name, 'Offline Alice');
-    expect(provider.clients.first.isSynced, isFalse);
+    expect(provider.clients.first.syncStatus, SyncStatus.pending);
     expect(provider.pendingSyncCount, 1);
     expect(repository.upsertedIds, isEmpty);
   });
@@ -239,7 +280,6 @@ void main() {
     );
 
     provider = await createProvider(online: false, existingLocal: preLocal);
-    // Keep local-unsynced unsynced and pending-del pending by failing remote sync
     repository.failUpsertIds.add('local-unsynced');
     repository.failDeleteIds.add('pending-del');
 
@@ -268,7 +308,7 @@ void main() {
     );
   });
 
-  test('sync continues past individual client failure and guards concurrent runs', () async {
+  test('sync marks failed records and retries them on subsequent sync without duplicating', () async {
     provider = await createProvider(online: false);
     await provider.addClient('Fail First');
     await provider.addClient('Succeed Second');
@@ -276,7 +316,6 @@ void main() {
     repository.failUpsertIds.add('uuid-1');
     connectivity.online = true;
 
-    // Trigger two concurrent syncs; second should be ignored by guard
     repository.upsertBlocker = Completer<void>();
     final s1 = provider.sync();
     final s2 = provider.sync();
@@ -284,8 +323,17 @@ void main() {
     await Future.wait([s1, s2]);
 
     expect(repository.upsertedIds, ['uuid-2']);
-    final byId = {for (final c in provider.clients) c.id: c};
-    expect(byId['uuid-1']?.isSynced, isFalse);
-    expect(byId['uuid-2']?.isSynced, isTrue);
+    var byId = {for (final c in provider.clients) c.id: c};
+    expect(byId['uuid-1']?.syncStatus, SyncStatus.failed);
+    expect(byId['uuid-2']?.syncStatus, SyncStatus.synced);
+
+    // Retry once failure clears
+    repository.failUpsertIds.remove('uuid-1');
+    repository.upsertBlocker = null;
+    await provider.sync();
+
+    expect(repository.upsertedIds, ['uuid-2', 'uuid-1']);
+    byId = {for (final c in provider.clients) c.id: c};
+    expect(byId['uuid-1']?.syncStatus, SyncStatus.synced);
   });
 }

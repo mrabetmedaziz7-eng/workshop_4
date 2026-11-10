@@ -223,3 +223,33 @@ In full transparency regarding the AI workflow:
 ### Manual Tasks Performed by the Developer
 - Updated `public.clients` in Supabase (added nullable `lat` and `lng` `double precision` columns and added the `UPDATE` RLS policy for `upsert`).
 - Verified emulator testing on Android (toggling Wi-Fi/mobile data, configuring mock coordinates in Extended controls -> Location, and checking two-device realtime sync).
+
+---
+
+## 11. Workshop 6 — Resilient Single-Room Waiting Queue
+
+### Overview
+Workshop 6 extended the Workshop 5 offline-first architecture with:
+- **Rich Sync & Queue State Models**: `SyncStatus` (`pending`, `syncing`, `synced`, `failed`), `AppConnectivity` (`checking`, `online`, `offline`, `backendUnavailable`), `QueueState` (`initial`, `loading`, `loaded`, `empty`, `refreshing`, `loadingMore`, `error`), plus `locationAccuracy` (`location_accuracy_m`) and `locationCapturedAt` (`location_captured_at`) on `Client`.
+- **Network vs. Backend Reachability (`ConnectivityService` & `ConnectivityProvider`)**: Distinguishes device network offline (`offline`) from Supabase unreachable (`backendUnavailable`) with 700ms debounced backend health checks and re-entrant check guards.
+- **Dedicated Synchronization Engine (`SyncService`) & SQLite v2 Migration**: Migrated `local_clients` (`schemaVersion = 2`) via `onUpgrade`, fetching both `pending` and `failed` records for automatic retry, transitioning records through `syncing` -> `synced` / `failed`, and processing pending offline deletes.
+- **RPC Registration & Graceful Schema Fallback (`ClientsRepository`)**: Added `registerOnServer(Client)` (calling `register_queue_client` RPC with automatic `PostgrestException` fallback to `upsert` if the Workshop 6 SQL migration/RPC is not yet applied in Supabase) and `fetchPage(offset, limit)` for pagination.
+- **Pagination & Realtime Deduplication (`QueueProvider`)**: Added `fetchInitialQueue()`, `loadMore()`, and `handleRealtimeInsert()` deduplication.
+- **Advanced UI Widgets**: Added `OfflineBanner` (all 4 `AppConnectivity` states), `LoadingWidget`, `SyncStatus` badges + optional location accuracy (`±Xm`) on `ClientTile`, and a pagination `"Load More"` footer on `WaitingRoomScreen`.
+
+### Issues Identified in the Workshop 6 PDF and How They Were Fixed
+1. **Static `_database` Singleton in `LocalQueueStorage`**:
+   - *Issue*: The Workshop 6 PDF repeated `static Database? _database;` in `LocalQueueStorage`, which leaks database handles across unit tests.
+   - *Fix*: Kept the instance-scoped `_database` pattern in `LocalQueueService` with `inMemory: true` (`singleInstance: false`) and the `kIsWeb` `useMemoryFallback`.
+2. **FIFO vs. `DESC` Ordering Contradiction**:
+   - *Issue*: `LocalQueueStorage.getClients()` and `handleRealtimeInsert` in the PDF ordered newest clients first (`created_at DESC` / `insert(0, client)`), which conflicts with the single shared FIFO waiting queue where `#1 Now Serving` is the oldest client.
+   - *Fix*: Maintained `created_at ASC` ordering across SQLite queries, `fetchPage`, realtime stream, and `handleRealtimeInsert` while preserving deduplication.
+3. **Syncing Engine Missing Offline Deletes & `SyncStatus.failed` Handling**:
+   - *Issue*: `SyncService` in the PDF only handled inserts, omitting offline deletions (`pending_delete`), and did not gracefully handle Supabase projects missing the optional `location_accuracy_m` column or `register_queue_client` RPC.
+   - *Fix*: Integrated `pending_delete` cleanup in `SyncService.synchronize()`, added `onUpgrade` SQLite migration from v1 to v2, and implemented automatic fallback from `register_queue_client` RPC / extended columns to core `upsert`.
+4. **`dart:async` Timer Leak Risk in `ConnectivityProvider`**:
+   - *Issue*: Needed deterministic testability for the 700ms debounce and safe cancellation on `dispose()`.
+   - *Fix*: Made `debounceDuration` injectable in `ConnectivityProvider` and cancelled both `_debounceTimer` and `_subscription` in `dispose()`.
+5. **Duplicate `LocalQueueService` Instance in Default `QueueProvider` Constructor**:
+   - *Issue*: Calling `QueueProvider()` without an explicit `localQueueService` evaluated `localQueueService ?? LocalQueueService()` twice—creating separate instances for `_local` and `_syncService`, which left newly added items stuck in `Waiting to sync` during live Chrome testing.
+   - *Fix*: Initialized `_syncService` in the constructor body from the already-assigned `_local` and `_repository` instances, and broadened `PostgrestException` fallback in `SupabaseClientsRepository.registerOnServer`.

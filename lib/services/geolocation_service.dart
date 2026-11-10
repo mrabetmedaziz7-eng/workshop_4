@@ -6,17 +6,22 @@ abstract class GeolocationService {
 
 class GeolocatorService implements GeolocationService {
   @override
-  Future<Position?> getCurrentLocation() async {
+  Future<Position?> getCurrentLocation() => getCurrentPosition();
+
+  Future<Position?> getCurrentPosition() async {
     try {
       if (!await Geolocator.isLocationServiceEnabled()) return null;
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
       }
-      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) return null;
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        return null;
+      }
       return await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.low,
+          accuracy: LocationAccuracy.medium,
           timeLimit: Duration(seconds: 10),
         ),
       );

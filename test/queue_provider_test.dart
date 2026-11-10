@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:waiting_room_app/models/client.dart';
+import 'package:waiting_room_app/models/queue_state.dart';
 import 'package:waiting_room_app/queue_provider.dart';
 import 'package:waiting_room_app/repositories/clients_repository.dart';
 import 'package:waiting_room_app/services/connectivity_service.dart';
@@ -14,7 +15,14 @@ class FakeConnectivity implements ConnectivityService {
   @override
   Stream<bool> get onlineChanges => _controller.stream;
   @override
+  Stream<bool> get networkChanges => _controller.stream;
+  @override
   Future<bool> get isOnline async => true;
+  @override
+  Future<bool> hasNetwork() async => true;
+  @override
+  Future<bool> isSupabaseAvailable() async => true;
+  void dispose() => _controller.close();
 }
 
 class FakeGeolocation implements GeolocationService {
@@ -29,10 +37,12 @@ class FakeClientsRepository implements ClientsRepository {
 
   bool shouldThrowOnInsert = false;
   bool shouldThrowOnDelete = false;
+  bool shouldThrowOnFetch = false;
 
   void emit(List<Client> clients) {
-    _storage.clear();
-    _storage.addAll(clients);
+    _storage
+      ..clear()
+      ..addAll(clients);
     _controller.add(List.unmodifiable(_storage));
   }
 
@@ -44,6 +54,16 @@ class FakeClientsRepository implements ClientsRepository {
   Stream<List<Client>> watchClients() async* {
     yield List.unmodifiable(_storage);
     yield* _controller.stream;
+  }
+
+  @override
+  Future<List<Client>> fetchPage({required int offset, required int limit}) async {
+    if (shouldThrowOnFetch) {
+      throw Exception('Fetch page failed');
+    }
+    if (offset >= _storage.length) return [];
+    final end = (offset + limit).clamp(0, _storage.length);
+    return List.unmodifiable(_storage.sublist(offset, end));
   }
 
   int _idCounter = 0;
@@ -80,6 +100,12 @@ class FakeClientsRepository implements ClientsRepository {
     _controller.add(List.unmodifiable(_storage));
   }
 
+  @override
+  Future<Client> registerOnServer(Client client) async {
+    await upsert(client);
+    return client.copyWith(isSynced: true);
+  }
+
   void dispose() {
     _controller.close();
   }
@@ -91,35 +117,39 @@ void main() {
   databaseFactory = databaseFactoryFfi;
   group('QueueProvider Tests with FakeClientsRepository', () {
     late FakeClientsRepository repository;
+    late FakeConnectivity connectivity;
     late QueueProvider provider;
     late LocalQueueService local;
-    late Database db;
 
     setUp(() async {
-      db = await databaseFactory.openDatabase(inMemoryDatabasePath);
-      await db.execute('CREATE TABLE local_clients (id TEXT PRIMARY KEY, name TEXT NOT NULL, lat REAL, lng REAL, created_at TEXT NOT NULL, is_synced INTEGER NOT NULL DEFAULT 0, pending_delete INTEGER NOT NULL DEFAULT 0)');
-      local = LocalQueueService(providedDatabase: db);
+      local = LocalQueueService(inMemory: true);
+      await local.database;
       repository = FakeClientsRepository();
-      provider = QueueProvider(
+      connectivity = FakeConnectivity();
+      provider = QueueProvider.withServices(
         repository: repository,
         localQueueService: local,
-        connectivityService: FakeConnectivity(),
+        connectivityService: connectivity,
         geolocationService: FakeGeolocation(),
         uuidGenerator: () => 'test-${DateTime.now().microsecondsSinceEpoch}',
+        pageSize: 2,
       );
       await provider.initialized;
     });
 
     tearDown(() async {
       provider.dispose();
-      await db.close();
+      connectivity.dispose();
       repository.dispose();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await local.close();
     });
 
     test('initial state has empty clients and loads stream', () async {
       await pumpEventQueue();
       expect(provider.clients, isEmpty);
       expect(provider.isLoading, isFalse);
+      expect(provider.state, QueueState.empty);
       expect(provider.errorMessage, isNull);
     });
 
@@ -141,6 +171,7 @@ void main() {
       await pumpEventQueue();
       expect(provider.clients.length, 1);
       expect(provider.clients.first.name, 'Alice Wonderland');
+      expect(provider.state, QueueState.loaded);
     });
 
     test('removeClient removes the specified client', () async {
@@ -177,7 +208,6 @@ void main() {
       await pumpEventQueue();
       expect(provider.clients, isEmpty);
 
-      // Should complete without error
       await provider.nextClient();
       expect(provider.clients, isEmpty);
       expect(provider.errorMessage, isNull);
@@ -227,6 +257,35 @@ void main() {
 
       expect(provider.errorMessage, isNull);
       expect(provider.clients.map((c) => c.name), ['Recovered Client']);
+    });
+
+    test('fetchInitialQueue and loadMore paginate and deduplicate items', () async {
+      repository.emit([
+        Client(id: '1', name: 'One', createdAt: DateTime.utc(2026, 1, 1)),
+        Client(id: '2', name: 'Two', createdAt: DateTime.utc(2026, 1, 2)),
+        Client(id: '3', name: 'Three', createdAt: DateTime.utc(2026, 1, 3)),
+      ]);
+
+      await provider.fetchInitialQueue();
+      expect(provider.state, QueueState.loaded);
+      expect(provider.clients.map((c) => c.id), ['1', '2']);
+      expect(provider.hasMore, isTrue);
+
+      await provider.loadMore();
+      expect(provider.clients.map((c) => c.id), ['1', '2', '3']);
+      expect(provider.hasMore, isFalse);
+
+      // Duplicate realtime insert must be ignored
+      provider.handleRealtimeInsert(
+        Client(id: '2', name: 'Two', createdAt: DateTime.utc(2026, 1, 2)),
+      );
+      expect(provider.clients.length, 3);
+
+      // New realtime insert is added cleanly
+      provider.handleRealtimeInsert(
+        Client(id: '4', name: 'Four', createdAt: DateTime.utc(2026, 1, 4)),
+      );
+      expect(provider.clients.map((c) => c.id), ['1', '2', '3', '4']);
     });
   });
 }

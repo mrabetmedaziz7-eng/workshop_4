@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:waiting_room_app/models/client.dart';
+import 'package:waiting_room_app/models/sync_status.dart';
 
 void main() {
   group('Client Model Tests', () {
@@ -119,6 +120,41 @@ void main() {
       final cleared = client.copyWith(lat: null, lng: null);
       expect(cleared.lat, isNull);
       expect(cleared.lng, isNull);
+    });
+
+    test('hasLocation and locationText reflect coordinate availability', () {
+      final withoutLoc = Client(
+        id: '1',
+        name: 'No Loc',
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+      expect(withoutLoc.hasLocation, isFalse);
+      expect(withoutLoc.locationText, 'Location not captured');
+
+      final withLoc = withoutLoc.copyWith(lat: 36.80649, lng: 10.18153);
+      expect(withLoc.hasLocation, isTrue);
+      expect(withLoc.locationText, '36.8065, 10.1815');
+    });
+
+    test('toLocalMap preserves location_accuracy_m and sync_status while toSupabaseMap excludes local sync_status', () {
+      final client = Client(
+        id: '1',
+        name: 'Test Client',
+        lat: 36.8065,
+        lng: 10.1815,
+        locationAccuracy: 5.5,
+        createdAt: DateTime.utc(2026, 1, 1),
+        syncStatus: SyncStatus.pending,
+      );
+
+      final localMap = client.toLocalMap();
+      expect(localMap['location_accuracy_m'], 5.5);
+      expect(localMap['sync_status'], 'pending');
+
+      final supabaseMap = client.toSupabaseMap();
+      expect(supabaseMap['location_accuracy_m'], 5.5);
+      expect(supabaseMap.containsKey('sync_status'), isFalse);
+      expect(supabaseMap.containsKey('pending_delete'), isFalse);
     });
   });
 }
