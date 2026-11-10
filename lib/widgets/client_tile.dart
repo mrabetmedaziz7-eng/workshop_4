@@ -182,6 +182,65 @@ class ClientTile extends StatelessWidget {
                         ),
                       ],
                     ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.location_on_outlined,
+                          size: 14,
+                          color: isDark
+                              ? AppColors.darkTextSecondary
+                              : AppColors.lightTextSecondary,
+                        ),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            client.lat != null && client.lng != null
+                                ? '📍 ${client.lat!.toStringAsFixed(4)}, ${client.lng!.toStringAsFixed(4)}'
+                                : '📍 Location not captured',
+                            style: theme.textTheme.bodyMedium?.copyWith(fontSize: 12),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (!client.isSynced) ...[
+                      const SizedBox(height: AppSpacing.xs),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.warning.withAlpha(isDark ? 35 : 25),
+                          borderRadius: AppRadius.pillRadius,
+                          border: Border.all(
+                            color: AppColors.warning.withAlpha(90),
+                            width: 0.8,
+                          ),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.cloud_off_rounded,
+                              size: 13,
+                              color: AppColors.warning,
+                            ),
+                            SizedBox(width: 4),
+                            Text(
+                              'Waiting to sync',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.warning,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),

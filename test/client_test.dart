@@ -69,5 +69,56 @@ void main() {
       expect(client.toString(), contains('Bob'));
       expect(client.toString(), contains('1'));
     });
+
+    test('toMap excludes local-only fields is_synced and pending_delete', () {
+      final client = Client(
+        id: '1',
+        name: 'Bob',
+        createdAt: DateTime.utc(2026, 1, 1),
+        lat: 36.8065,
+        lng: 10.1815,
+        isSynced: false,
+        pendingDelete: true,
+      );
+
+      final remoteMap = client.toMap();
+      expect(remoteMap['lat'], 36.8065);
+      expect(remoteMap['lng'], 10.1815);
+      expect(remoteMap.containsKey('is_synced'), isFalse);
+      expect(remoteMap.containsKey('pending_delete'), isFalse);
+    });
+
+    test('toLocalMap and fromLocalMap round-trip preserves sync flags and coordinates', () {
+      final client = Client(
+        id: 'local-1',
+        name: 'Local User',
+        createdAt: DateTime.utc(2026, 1, 1, 12, 0),
+        lat: 36.8065,
+        lng: 10.1815,
+        isSynced: false,
+        pendingDelete: true,
+      );
+
+      final localMap = client.toLocalMap();
+      expect(localMap['is_synced'], 0);
+      expect(localMap['pending_delete'], 1);
+
+      final restored = Client.fromLocalMap(localMap);
+      expect(restored, equals(client));
+    });
+
+    test('copyWith can clear lat and lng to null', () {
+      final client = Client(
+        id: '1',
+        name: 'Bob',
+        createdAt: DateTime.utc(2026, 1, 1),
+        lat: 10.0,
+        lng: 20.0,
+      );
+
+      final cleared = client.copyWith(lat: null, lng: null);
+      expect(cleared.lat, isNull);
+      expect(cleared.lng, isNull);
+    });
   });
 }
