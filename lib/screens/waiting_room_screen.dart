@@ -1,13 +1,29 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/app_connectivity.dart';
+import '../models/queue_state.dart';
+import '../providers/connectivity_provider.dart';
 import '../queue_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/add_client_bar.dart';
 import '../widgets/client_tile.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/loading_widget.dart';
+import '../widgets/offline_banner.dart';
 
 class WaitingRoomScreen extends StatelessWidget {
   const WaitingRoomScreen({super.key});
+
+  AppConnectivity _effectiveConnectivity(
+    BuildContext context,
+    QueueProvider queue,
+  ) {
+    try {
+      return context.watch<ConnectivityProvider>().status;
+    } on ProviderNotFoundException {
+      return queue.connectivityStatus;
+    }
+  }
 
   Future<void> _handleNextClient(BuildContext context) async {
     final provider = context.read<QueueProvider>();
@@ -106,10 +122,29 @@ class WaitingRoomScreen extends StatelessWidget {
           ],
         ),
         actions: [
-          // Realtime live sync indicator
+          // Realtime / Offline status indicator
           Consumer<QueueProvider>(
             builder: (context, queue, _) {
-              final isOnline = queue.errorMessage == null && !queue.isLoading;
+              final connectivity = _effectiveConnectivity(context, queue);
+              final isRealtimeReady = connectivity == AppConnectivity.online &&
+                  queue.errorMessage == null &&
+                  !queue.isLoading &&
+                  queue.pendingSyncCount == 0;
+              final statusColor = switch (connectivity) {
+                AppConnectivity.offline => AppColors.error,
+                AppConnectivity.backendUnavailable => AppColors.warning,
+                AppConnectivity.checking => AppColors.secondary,
+                AppConnectivity.online =>
+                  isRealtimeReady ? AppColors.accent : AppColors.warning,
+              };
+              final statusLabel = switch (connectivity) {
+                AppConnectivity.offline => 'Offline',
+                AppConnectivity.backendUnavailable => 'Server Down',
+                AppConnectivity.checking => 'Checking...',
+                AppConnectivity.online =>
+                  isRealtimeReady ? 'Realtime' : 'Syncing...',
+              };
+
               return Container(
                 margin: const EdgeInsets.only(right: AppSpacing.md),
                 padding: const EdgeInsets.symmetric(
@@ -117,12 +152,10 @@ class WaitingRoomScreen extends StatelessWidget {
                   vertical: 5,
                 ),
                 decoration: BoxDecoration(
-                  color: (isOnline ? AppColors.accent : AppColors.warning)
-                      .withAlpha(isDark ? 35 : 25),
+                  color: statusColor.withAlpha(isDark ? 35 : 25),
                   borderRadius: AppRadius.pillRadius,
                   border: Border.all(
-                    color: (isOnline ? AppColors.accent : AppColors.warning)
-                        .withAlpha(80),
+                    color: statusColor.withAlpha(80),
                   ),
                 ),
                 child: Row(
@@ -132,17 +165,17 @@ class WaitingRoomScreen extends StatelessWidget {
                       width: 7,
                       height: 7,
                       decoration: BoxDecoration(
-                        color: isOnline ? AppColors.accent : AppColors.warning,
+                        color: statusColor,
                         shape: BoxShape.circle,
                       ),
                     ),
                     const SizedBox(width: 6),
                     Text(
-                      isOnline ? 'Realtime' : 'Syncing...',
+                      statusLabel,
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
-                        color: isOnline ? AppColors.accent : AppColors.warning,
+                        color: statusColor,
                       ),
                     ),
                   ],
@@ -164,6 +197,13 @@ class WaitingRoomScreen extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  // Offline / Backend availability banner
+                  Consumer<QueueProvider>(
+                    builder: (context, queue, _) {
+                      final connectivity = _effectiveConnectivity(context, queue);
+                      return OfflineBanner(status: connectivity);
+                    },
+                  ),
                   // Add Client Input Bar
                   const AddClientBar(),
                   const SizedBox(height: AppSpacing.md),
@@ -243,21 +283,10 @@ class WaitingRoomScreen extends StatelessWidget {
                     child: Consumer<QueueProvider>(
                       builder: (context, queue, _) {
                         // 1. Loading state
-                        if (queue.isLoading && queue.clients.isEmpty) {
-                          return Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const CircularProgressIndicator(
-                                  strokeWidth: 3,
-                                ),
-                                const SizedBox(height: AppSpacing.md),
-                                Text(
-                                  'Connecting to waiting room...',
-                                  style: theme.textTheme.bodyMedium,
-                                ),
-                              ],
-                            ),
+                        if ((queue.isLoading || queue.state == QueueState.loading) &&
+                            queue.clients.isEmpty) {
+                          return const LoadingWidget(
+                            message: 'Connecting to waiting room...',
                           );
                         }
 
@@ -311,15 +340,33 @@ class WaitingRoomScreen extends StatelessWidget {
                           return const EmptyStateWidget();
                         }
 
-                        // 4. Clients list
+                        // 4. Clients list (with optional pagination footer)
+                        final showLoadMore = queue.clients.length >= 20 &&
+                            (queue.hasMore || queue.isLoadingMore);
                         return RefreshIndicator(
-                          onRefresh: () async => queue.retry(),
+                          onRefresh: queue.retry,
                           child: ListView.builder(
                             physics: const AlwaysScrollableScrollPhysics(
                               parent: BouncingScrollPhysics(),
                             ),
-                            itemCount: queue.clients.length,
+                            itemCount: queue.clients.length + (showLoadMore ? 1 : 0),
                             itemBuilder: (context, index) {
+                              if (index == queue.clients.length) {
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: AppSpacing.md,
+                                  ),
+                                  child: Center(
+                                    child: queue.isLoadingMore
+                                        ? const CircularProgressIndicator(strokeWidth: 2.5)
+                                        : OutlinedButton.icon(
+                                            onPressed: () => queue.loadMore(),
+                                            icon: const Icon(Icons.expand_more_rounded),
+                                            label: const Text('Load More'),
+                                          ),
+                                  ),
+                                );
+                              }
                               final client = queue.clients[index];
                               return ClientTile(
                                 key: ValueKey(client.id),

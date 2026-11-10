@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'providers/connectivity_provider.dart';
 import 'queue_provider.dart';
 import 'screens/waiting_room_screen.dart';
+import 'services/connectivity_service.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
@@ -49,8 +51,15 @@ Future<void> main() async {
 
   // 5. Run App
   runApp(
-    ChangeNotifierProvider<QueueProvider>(
-      create: (_) => QueueProvider(),
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider<ConnectivityProvider>(
+          create: (_) => ConnectivityProvider(DeviceConnectivityService()),
+        ),
+        ChangeNotifierProvider<QueueProvider>(
+          create: (_) => QueueProvider(),
+        ),
+      ],
       child: const WaitingRoomApp(),
     ),
   );

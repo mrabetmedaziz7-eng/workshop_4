@@ -164,3 +164,92 @@ During the development process, several legacy, incomplete, or broken patterns f
   1. **Role-Based Access Control**: Restrict `DELETE` and `nextClient` operations to authenticated staff or admin roles (e.g. `service_role` or a custom claim `app_metadata.role = 'staff'`).
   2. **Audit Logging**: Maintain an `events` or `audit_log` table recording who was served and timestamping transitions (`served_at`).
   3. **Row-Level User Ownership**: In multi-room applications, partition tables by `room_id` and enforce membership checks via `auth.uid()`.
+
+---
+
+## 10. Workshop 5 — Offline-First SQLite Queue & Geolocation
+
+### Overview & Agent Handoff History
+Workshop 5 upgraded the Workshop 4 real-time waiting room into an **offline-first** Android/iOS application backed by local **SQLite (`sqflite`)**, **device geolocation (`geolocator`)**, and **connectivity monitoring (`connectivity_plus`)**.
+
+In full transparency regarding the AI workflow:
+1. A **first AI agent** (in VS Code) began the Workshop 5 upgrade—adding packages, updating `Client`, creating the service interfaces, and modifying parts of `QueueProvider` and the UI—but left the work incomplete (with a failing test in `queue_provider_test.dart`, async/race bugs in geolocation and offline deletion handling, missing offline/geolocation/widget tests, and outdated Workshop 4 docs).
+2. A **second AI agent** (Antigravity / Gemini 3.8 Flash) audited all 12 requirements read-only, identified the remaining bugs and gaps, wrote the missing TDD tests first to reproduce the failures, fixed the provider/service/UI defects, and updated `README.md` and `AI.md`.
+
+### What the AI Generated / Updated for Workshop 5
+- **Packages (`pubspec.yaml`)**: Added `sqflite`, `path`, `path_provider`, `geolocator`, `uuid`, `connectivity_plus`, and dev dependency `sqflite_common_ffi`.
+- **`Client` Model (`lib/models/client.dart`)**: Added `lat`, `lng`, `isSynced`, `pendingDelete`, `fromLocalMap`/`toLocalMap`, and `copyWith` with sentinel null-clearing while keeping `toMap()` restricted to remote Supabase columns (`id`, `name`, `created_at`, `lat`, `lng`).
+- **Services (`lib/services/`)**:
+  - `LocalQueueService`: Instance-scoped SQLite helper managing `local_clients` with `inMemory` (`singleInstance: false`) support for isolated tests, a pure-Dart `useMemoryFallback` mode when `kIsWeb` is true (so Chrome runs without `MissingPluginException`), `getClientById`, `getClients`, `getUnsyncedClients`, `getPendingDeletes`, `markClientAsSynced`, `markPendingDelete`, `deleteLocally`, `upsertSyncedFromRemote`, and `removeSyncedNotIn`.
+  - `GeolocationService` / `GeolocatorService`: Injectable wrapper checking location services and permissions with a 10-second `LocationSettings` timeout that always returns `null` on failure instead of throwing.
+  - `ConnectivityService` / `DeviceConnectivityService`: Injectable wrapper around `connectivity_plus` exposing `onlineChanges` and `isOnline`.
+- **`ClientsRepository` (`lib/repositories/clients_repository.dart`)**: Added `upsert(Client)` (`onConflict: 'id'`) to both `SupabaseClientsRepository` and test fakes.
+- **`QueueProvider` (`lib/queue_provider.dart`)**: Implemented local-first startup (`initialized` future), `addClient` capturing UUID v4 + geolocation locally first before `unawaited(sync())`, offline-safe `removeClient`/`nextClient`, guarded `sync()`, safe remote stream merge, automatic sync & resubscription on reconnect, and proper `dispose()` cleanup.
+- **UI & Platform Permissions**: Updated `ClientTile` (`📍 lat, lng` to 4 decimals / `📍 Location not captured` and **"Waiting to sync"** badge), `WaitingRoomScreen` (offline banner and accurate `Offline` / `Syncing...` / `Realtime` status pill), `AndroidManifest.xml`, and `Info.plist`.
+- **Tests**: Fixed `queue_provider_test.dart`, expanded `client_test.dart`, `local_queue_service_test.dart`, and `widget_test.dart`, and created `queue_provider_offline_test.dart` and `queue_provider_geolocation_test.dart`.
+
+### Issues Identified in the Workshop 5 PDF and How They Were Fixed
+1. **Offline Deletes Not Covered**:
+   - *Issue*: The workshop guide focused on offline inserts without handling deletions performed while offline, which would either throw on Supabase `delete()` or be overwritten on reconnect.
+   - *Fix*: Added `pending_delete` tracking in SQLite (`markPendingDelete`, `getPendingDeletes`). Unsynced rows are deleted locally immediately; synced rows are marked `pending_delete = 1`, hidden from `getClients()`, and deleted remotely during `sync()`.
+2. **Empty Realtime Handler Causing Local/Remote Drift**:
+   - *Issue*: Leaving the realtime stream merge incomplete allowed remote snapshots to overwrite local unsynced edits or resurrect rows deleted locally while offline.
+   - *Fix*: Implemented `upsertSyncedFromRemote` and `removeSyncedNotIn` so incoming remote data skips rows where `is_synced = 0` or `pending_delete = 1`, and pruning only removes synced non-pending rows absent from the server.
+3. **`sqflite` Not Supporting Web**:
+   - *Issue*: `sqflite` and `path_provider` throw `MissingPluginException` on Flutter Web (`flutter run -d chrome`).
+   - *Fix*: Targeted Android/iOS for persistent SQLite storage (`flutter run -d android`), used `sqflite_common_ffi` for desktop unit tests, and later added a `kIsWeb` in-memory fallback (`useMemoryFallback`) in `LocalQueueService` so the app also runs cleanly on Google Chrome.
+4. **Uncompilable Test Code (`final` Private Field Assignment & `void _onCreate ... async`)**:
+   - *Issue*: Sample code attempted to assign to a `final` private field and declared `void _onCreate(...) async` where `sqflite` expects `Future<void> Function(Database, int)` (so table creation wasn't awaited).
+   - *Fix*: Used constructor-injected dependencies for testing and typed `_onCreate` as `Future<void> _onCreate(Database db, int version) async` with `await db.execute(...)`.
+5. **Shared Static Database Singleton Leaking Between Tests**:
+   - *Issue*: A static `_database` singleton (and `openDatabase(inMemoryDatabasePath)` without `singleInstance: false`) leaked rows between unit tests.
+   - *Fix*: Stored `_database` per `LocalQueueService` instance, supported `providedDatabase` and `inMemory: true` with `singleInstance: false`, and closed databases cleanly in `tearDown`.
+6. **Deprecated `desiredAccuracy` Parameter in `geolocator`**:
+   - *Issue*: Workshop snippets used the deprecated `desiredAccuracy` argument in `Geolocator.getCurrentPosition`.
+   - *Fix*: Used `locationSettings: const LocationSettings(accuracy: LocationAccuracy.low, timeLimit: Duration(seconds: 10))`.
+7. **`MockQueueProvider` Never Generated**:
+   - *Issue*: Test samples referenced a `MockQueueProvider` from `build_runner`/`mockito` without generating it.
+   - *Fix*: Used real `QueueProvider` instances wired with lightweight fake implementations of `ClientsRepository`, `ConnectivityService`, `GeolocationService`, and in-memory `LocalQueueService` (and direct `ClientTile` / `WaitingRoomScreen` widget tests).
+8. **Missing `UPDATE` RLS Policy Needed by `upsert`**:
+   - *Issue*: `upsert(onConflict: 'id')` requires both `INSERT` and `UPDATE` Row Level Security policies on `public.clients`, whereas Workshop 4 only created `SELECT`, `INSERT`, and `DELETE`.
+   - *Fix*: Added an `UPDATE` RLS policy on `public.clients` in Supabase so `upsert` succeeds cleanly.
+9. **Outdated Package Versions**:
+   - *Issue*: Older `connectivity_plus` (returning a single `ConnectivityResult` instead of `List<ConnectivityResult>`), older `geolocator`, and older `sqflite` versions in the PDF caused API mismatches.
+   - *Fix*: Upgraded to current stable versions (`connectivity_plus: ^7.3.2`, `geolocator: ^14.0.1`, `sqflite: ^2.4.5`, `sqflite_common_ffi: ^2.4.5`, `uuid: ^4.6.0`, `path_provider: ^2.1.6`) and updated `DeviceConnectivityService` for `List<ConnectivityResult>`.
+10. **No Automatic Sync on Reconnect**:
+    - *Issue*: Sync was only invoked manually or on `addClient`, leaving offline changes unsynced after network recovery.
+    - *Fix*: Subscribed to `ConnectivityService.onlineChanges` in `QueueProvider.initialize()` to automatically call `sync()` and resubscribe to the realtime stream when connectivity returns.
+
+### Manual Tasks Performed by the Developer
+- Updated `public.clients` in Supabase (added nullable `lat` and `lng` `double precision` columns and added the `UPDATE` RLS policy for `upsert`).
+- Verified emulator testing on Android (toggling Wi-Fi/mobile data, configuring mock coordinates in Extended controls -> Location, and checking two-device realtime sync).
+
+---
+
+## 11. Workshop 6 — Resilient Single-Room Waiting Queue
+
+### Overview
+Workshop 6 extended the Workshop 5 offline-first architecture with:
+- **Rich Sync & Queue State Models**: `SyncStatus` (`pending`, `syncing`, `synced`, `failed`), `AppConnectivity` (`checking`, `online`, `offline`, `backendUnavailable`), `QueueState` (`initial`, `loading`, `loaded`, `empty`, `refreshing`, `loadingMore`, `error`), plus `locationAccuracy` (`location_accuracy_m`) and `locationCapturedAt` (`location_captured_at`) on `Client`.
+- **Network vs. Backend Reachability (`ConnectivityService` & `ConnectivityProvider`)**: Distinguishes device network offline (`offline`) from Supabase unreachable (`backendUnavailable`) with 700ms debounced backend health checks and re-entrant check guards.
+- **Dedicated Synchronization Engine (`SyncService`) & SQLite v2 Migration**: Migrated `local_clients` (`schemaVersion = 2`) via `onUpgrade`, fetching both `pending` and `failed` records for automatic retry, transitioning records through `syncing` -> `synced` / `failed`, and processing pending offline deletes.
+- **RPC Registration & Graceful Schema Fallback (`ClientsRepository`)**: Added `registerOnServer(Client)` (calling `register_queue_client` RPC with automatic `PostgrestException` fallback to `upsert` if the Workshop 6 SQL migration/RPC is not yet applied in Supabase) and `fetchPage(offset, limit)` for pagination.
+- **Pagination & Realtime Deduplication (`QueueProvider`)**: Added `fetchInitialQueue()`, `loadMore()`, and `handleRealtimeInsert()` deduplication.
+- **Advanced UI Widgets**: Added `OfflineBanner` (all 4 `AppConnectivity` states), `LoadingWidget`, `SyncStatus` badges + optional location accuracy (`±Xm`) on `ClientTile`, and a pagination `"Load More"` footer on `WaitingRoomScreen`.
+
+### Issues Identified in the Workshop 6 PDF and How They Were Fixed
+1. **Static `_database` Singleton in `LocalQueueStorage`**:
+   - *Issue*: The Workshop 6 PDF repeated `static Database? _database;` in `LocalQueueStorage`, which leaks database handles across unit tests.
+   - *Fix*: Kept the instance-scoped `_database` pattern in `LocalQueueService` with `inMemory: true` (`singleInstance: false`) and the `kIsWeb` `useMemoryFallback`.
+2. **FIFO vs. `DESC` Ordering Contradiction**:
+   - *Issue*: `LocalQueueStorage.getClients()` and `handleRealtimeInsert` in the PDF ordered newest clients first (`created_at DESC` / `insert(0, client)`), which conflicts with the single shared FIFO waiting queue where `#1 Now Serving` is the oldest client.
+   - *Fix*: Maintained `created_at ASC` ordering across SQLite queries, `fetchPage`, realtime stream, and `handleRealtimeInsert` while preserving deduplication.
+3. **Syncing Engine Missing Offline Deletes & `SyncStatus.failed` Handling**:
+   - *Issue*: `SyncService` in the PDF only handled inserts, omitting offline deletions (`pending_delete`), and did not gracefully handle Supabase projects missing the optional `location_accuracy_m` column or `register_queue_client` RPC.
+   - *Fix*: Integrated `pending_delete` cleanup in `SyncService.synchronize()`, added `onUpgrade` SQLite migration from v1 to v2, and implemented automatic fallback from `register_queue_client` RPC / extended columns to core `upsert`.
+4. **`dart:async` Timer Leak Risk in `ConnectivityProvider`**:
+   - *Issue*: Needed deterministic testability for the 700ms debounce and safe cancellation on `dispose()`.
+   - *Fix*: Made `debounceDuration` injectable in `ConnectivityProvider` and cancelled both `_debounceTimer` and `_subscription` in `dispose()`.
+5. **Duplicate `LocalQueueService` Instance in Default `QueueProvider` Constructor**:
+   - *Issue*: Calling `QueueProvider()` without an explicit `localQueueService` evaluated `localQueueService ?? LocalQueueService()` twice—creating separate instances for `_local` and `_syncService`, which left newly added items stuck in `Waiting to sync` during live Chrome testing.
+   - *Fix*: Initialized `_syncService` in the constructor body from the already-assigned `_local` and `_repository` instances, and broadened `PostgrestException` fallback in `SupabaseClientsRepository.registerOnServer`.
