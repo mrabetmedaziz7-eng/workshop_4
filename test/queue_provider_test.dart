@@ -1,8 +1,26 @@
 import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:waiting_room_app/models/client.dart';
 import 'package:waiting_room_app/queue_provider.dart';
 import 'package:waiting_room_app/repositories/clients_repository.dart';
+import 'package:waiting_room_app/services/connectivity_service.dart';
+import 'package:waiting_room_app/services/geolocation_service.dart';
+import 'package:waiting_room_app/services/local_queue_service.dart';
+
+class FakeConnectivity implements ConnectivityService {
+  final _controller = StreamController<bool>.broadcast();
+  @override
+  Stream<bool> get onlineChanges => _controller.stream;
+  @override
+  Future<bool> get isOnline async => true;
+}
+
+class FakeGeolocation implements GeolocationService {
+  @override
+  Future<Position?> getCurrentLocation() async => null;
+}
 
 class FakeClientsRepository implements ClientsRepository {
   final StreamController<List<Client>> _controller =
@@ -54,23 +72,47 @@ class FakeClientsRepository implements ClientsRepository {
     _controller.add(List.unmodifiable(_storage));
   }
 
+  @override
+  Future<void> upsert(Client client) async {
+    if (shouldThrowOnInsert) throw Exception('Database insert error');
+    _storage.removeWhere((item) => item.id == client.id);
+    _storage.add(client.copyWith(isSynced: true));
+    _controller.add(List.unmodifiable(_storage));
+  }
+
   void dispose() {
     _controller.close();
   }
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  sqfliteFfiInit();
+  databaseFactory = databaseFactoryFfi;
   group('QueueProvider Tests with FakeClientsRepository', () {
     late FakeClientsRepository repository;
     late QueueProvider provider;
+    late LocalQueueService local;
+    late Database db;
 
-    setUp(() {
+    setUp(() async {
+      db = await databaseFactory.openDatabase(inMemoryDatabasePath);
+      await db.execute('CREATE TABLE local_clients (id TEXT PRIMARY KEY, name TEXT NOT NULL, lat REAL, lng REAL, created_at TEXT NOT NULL, is_synced INTEGER NOT NULL DEFAULT 0, pending_delete INTEGER NOT NULL DEFAULT 0)');
+      local = LocalQueueService(providedDatabase: db);
       repository = FakeClientsRepository();
-      provider = QueueProvider(repository: repository);
+      provider = QueueProvider(
+        repository: repository,
+        localQueueService: local,
+        connectivityService: FakeConnectivity(),
+        geolocationService: FakeGeolocation(),
+        uuidGenerator: () => 'test-${DateTime.now().microsecondsSinceEpoch}',
+      );
+      await provider.initialized;
     });
 
-    tearDown(() {
+    tearDown(() async {
       provider.dispose();
+      await db.close();
       repository.dispose();
     });
 
@@ -150,31 +192,13 @@ void main() {
       expect(provider.isLoading, isFalse);
     });
 
-    test('insert failure sets errorMessage and rethrows', () async {
+    test('missing delete is handled safely', () async {
+      await provider.removeClient('non-existent-id');
       await pumpEventQueue();
-      repository.shouldThrowOnInsert = true;
-
-      expect(
-        () => provider.addClient('Test Name'),
-        throwsA(isA<Exception>()),
-      );
-      await pumpEventQueue();
-      expect(provider.errorMessage, contains('Database insert error'));
-    });
-
-    test('delete failure sets errorMessage and rethrows', () async {
-      repository.shouldThrowOnDelete = true;
-
-      expect(
-        () => provider.removeClient('non-existent-id'),
-        throwsA(isA<Exception>()),
-      );
-      await pumpEventQueue();
-      expect(provider.errorMessage, contains('Database delete error'));
+      expect(provider.clients, isEmpty);
     });
 
     test('clients list is unmodifiable', () async {
-      await pumpEventQueue();
       await provider.addClient('Alice');
       await pumpEventQueue();
 
@@ -183,6 +207,26 @@ void main() {
         () => list.clear(),
         throwsA(isA<UnsupportedError>()),
       );
+    });
+
+    test('retry clears error and resubscribes after stream error', () async {
+      await pumpEventQueue();
+      repository.emitError(Exception('Stream dropped'));
+      await pumpEventQueue();
+      expect(provider.errorMessage, contains('Stream dropped'));
+
+      await provider.retry();
+      repository.emit([
+        Client(
+          id: 'r-1',
+          name: 'Recovered Client',
+          createdAt: DateTime.utc(2026, 1, 1),
+        ),
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+
+      expect(provider.errorMessage, isNull);
+      expect(provider.clients.map((c) => c.name), ['Recovered Client']);
     });
   });
 }

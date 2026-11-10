@@ -106,10 +106,19 @@ class WaitingRoomScreen extends StatelessWidget {
           ],
         ),
         actions: [
-          // Realtime live sync indicator
+          // Realtime / Offline status indicator
           Consumer<QueueProvider>(
             builder: (context, queue, _) {
-              final isOnline = queue.errorMessage == null && !queue.isLoading;
+              final isRealtimeReady = queue.isOnline &&
+                  queue.errorMessage == null &&
+                  !queue.isLoading &&
+                  queue.pendingSyncCount == 0;
+              final statusColor =
+                  isRealtimeReady ? AppColors.accent : AppColors.warning;
+              final statusLabel = !queue.isOnline
+                  ? 'Offline'
+                  : (isRealtimeReady ? 'Realtime' : 'Syncing...');
+
               return Container(
                 margin: const EdgeInsets.only(right: AppSpacing.md),
                 padding: const EdgeInsets.symmetric(
@@ -117,12 +126,10 @@ class WaitingRoomScreen extends StatelessWidget {
                   vertical: 5,
                 ),
                 decoration: BoxDecoration(
-                  color: (isOnline ? AppColors.accent : AppColors.warning)
-                      .withAlpha(isDark ? 35 : 25),
+                  color: statusColor.withAlpha(isDark ? 35 : 25),
                   borderRadius: AppRadius.pillRadius,
                   border: Border.all(
-                    color: (isOnline ? AppColors.accent : AppColors.warning)
-                        .withAlpha(80),
+                    color: statusColor.withAlpha(80),
                   ),
                 ),
                 child: Row(
@@ -132,17 +139,17 @@ class WaitingRoomScreen extends StatelessWidget {
                       width: 7,
                       height: 7,
                       decoration: BoxDecoration(
-                        color: isOnline ? AppColors.accent : AppColors.warning,
+                        color: statusColor,
                         shape: BoxShape.circle,
                       ),
                     ),
                     const SizedBox(width: 6),
                     Text(
-                      isOnline ? 'Realtime' : 'Syncing...',
+                      statusLabel,
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
-                        color: isOnline ? AppColors.accent : AppColors.warning,
+                        color: statusColor,
                       ),
                     ),
                   ],
@@ -164,6 +171,28 @@ class WaitingRoomScreen extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  // Offline status
+                  Consumer<QueueProvider>(
+                    builder: (context, queue, _) {
+                      if (queue.isOnline) return const SizedBox.shrink();
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: AppSpacing.md),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: AppColors.warning.withAlpha(25),
+                          borderRadius: AppRadius.pillRadius,
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.cloud_off_rounded, size: 18, color: AppColors.warning),
+                            SizedBox(width: 8),
+                            Text('Offline · changes will sync when connected'),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
                   // Add Client Input Bar
                   const AddClientBar(),
                   const SizedBox(height: AppSpacing.md),
@@ -313,7 +342,7 @@ class WaitingRoomScreen extends StatelessWidget {
 
                         // 4. Clients list
                         return RefreshIndicator(
-                          onRefresh: () async => queue.retry(),
+                          onRefresh: queue.retry,
                           child: ListView.builder(
                             physics: const AlwaysScrollableScrollPhysics(
                               parent: BouncingScrollPhysics(),

@@ -1,24 +1,64 @@
-# 🕒 Real-Time Waiting Room App
+# 🕒 Offline-First Waiting Room App
 
-A modern, responsive, real-time Waiting Room Flutter application powered by **Supabase Realtime** and **Provider** (`ChangeNotifier`).
+A modern, offline-first Waiting Room Flutter application powered by **SQLite (`sqflite`)**, **Geolocator**, **Connectivity Plus**, **Supabase Realtime**, and **Provider** (`ChangeNotifier`).
+
+> **Platform Note (SQLite on Android / iOS; In-Memory Fallback on Chrome):** Because `sqflite` and `path_provider` do not support Flutter Web, persistent SQLite offline storage targets **Android** (and iOS). On **Chrome (Web)**, `LocalQueueService` automatically uses a pure-Dart in-memory store (`kIsWeb`) so the app runs cleanly for live Supabase Realtime and browser testing (data resets on page refresh). Unit tests run on desktop via `sqflite_common_ffi`.
 
 ---
 
 ## 📖 Features
 
-- **Live Realtime Synchronization**: Seamless updates across all open devices, browser tabs, and mobile clients using Supabase Realtime Postgres Changes.
-- **Queue Management**:
-  - **Add to Queue**: Input client names with instant auto-trimming and keyboard submit.
-  - **Now Serving Highlight**: The oldest client (first in line) is highlighted with an active badge and status styling.
-  - **Next Client**: Serves and removes the first client in line with a single click (disabled when queue is empty).
-  - **Individual Removal**: Remove any client from the queue at any time.
-- **Modern Material 3 Design**:
-  - Curated Indigo & Emerald palette with responsive constraints (scales seamlessly from phone screens to wide desktop browsers).
-  - Dedicated empty state, loading indicator, and connection error handling with retry support.
-  - Localized creation time formatting (`HH:mm`).
-- **Clean Architecture & Full Test Coverage**:
-  - Null-safe code adhering strictly to `supabase_flutter` v2 API paradigms (no deprecated v1 error patterns).
-  - Unit tests for models and providers with a `FakeClientsRepository`, widget tests, and live Supabase connection verification.
+- **Offline-First Local Queue (`sqflite`)**:
+  - Clients are persisted locally first in `local_clients` with a client-generated UUID v4, so adding and removing clients works immediately with zero network dependency.
+  - Unsynced rows display a **"Waiting to sync"** badge until uploaded to Supabase.
+  - Offline banner (`Offline · changes will sync when connected`) and AppBar status pill (`Offline` / `Syncing...` / `Realtime`) keep connection state clear.
+- **Automatic Bidirectional Sync & Realtime**:
+  - Loads cached local rows immediately on startup, syncs pending changes, and subscribes to Supabase Realtime (`stream(primaryKey: ['id'])`).
+  - Automatically syncs pending inserts (`upsert`) and pending deletes (`delete`) when connectivity returns.
+  - Concurrent sync runs are guarded, and individual item failures are logged without blocking remaining items.
+- **Geolocation Tagging (`geolocator`)**:
+  - Captures device coordinates (`lat`, `lng`) with a 10-second timeout and `LocationAccuracy.low`.
+  - Displays `📍 lat, lng` formatted to 4 decimal places on each tile, or `📍 Location not captured` if permissions/services are unavailable (rejects invalid `(0, 0)` coordinates).
+- **Queue Management & Material 3 UI**:
+  - Add clients with auto-trimming, highlight `#1` **Now Serving**, advance with **Next Client**, or remove any client (online or offline).
+  - Clean empty, loading, and error states with pull-to-refresh / retry support.
+
+---
+
+## 🏗️ Offline-First Architecture & How Sync Works
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│                         WaitingRoomScreen                         │
+│   (Offline Banner · AddClientBar · ClientTile · Next Client)      │
+└───────────────────────────────▲───────────────────────────────────┘
+                                │ notifyListeners()
+┌───────────────────────────────┴───────────────────────────────────┐
+│                           QueueProvider                           │
+│  1. Load local SQLite -> 2. Sync pending -> 3. Subscribe Realtime │
+│  Listens to ConnectivityService.onlineChanges for auto-reconnect  │
+└──────▲──────────────────────────▲──────────────────────────▲──────┘
+       │                          │                          │
+┌──────┴───────────┐   ┌──────────┴───────────┐   ┌──────────┴──────────┐
+│ LocalQueueService│   │  GeolocationService  │   │ ClientsRepository   │
+│ (sqflite local   │   │ (permission/service  │   │ (Supabase v2 upsert │
+│  `local_clients`)│   │  check, 10s timeout) │   │  stream & delete)   │
+└──────────────────┘   └──────────────────────┘   └──────────▲──────────┘
+                                                             │
+                                                  ┌──────────┴──────────┐
+                                                  │   Supabase Cloud    │
+                                                  │  (`public.clients`) │
+                                                  └─────────────────────┘
+```
+
+### How Synchronization Works
+1. **Startup**: `QueueProvider` loads `local_clients` (excluding `pending_delete = 1`) immediately so cached clients appear without waiting for the network.
+2. **Adding a Client (`addClient`)**: Generates a UUID v4 locally, attempts geolocation capture (falling back to `null` on failure/denial), inserts into `local_clients` with `is_synced = 0`, refreshes the UI immediately, and triggers `unawaited(sync())` if online.
+3. **Removing a Client (`removeClient` / `nextClient`)**:
+   - If the client has never been synced (`is_synced = 0`), it is deleted directly from SQLite.
+   - If the client is already synced (`is_synced = 1`), it is marked `pending_delete = 1` (immediately hidden from the queue) and deleted remotely either right away (if online) or during the next `sync()` once reconnected.
+4. **Sync Loop (`sync()`)**: Guarded against concurrent execution. Pushes unsynced rows one by one via `upsert(client, onConflict: 'id')` and marks each `is_synced = 1` on success, then processes `pending_delete = 1` rows via `delete(id)` and removes them locally.
+5. **Realtime Merge**: Incoming Supabase stream snapshots update synced rows via `upsertSyncedFromRemote` and prune remotely deleted rows via `removeSyncedNotIn`—while **never** overwriting unsynced local inserts or resurrecting rows marked `pending_delete = 1`.
 
 ---
 
@@ -26,38 +66,45 @@ A modern, responsive, real-time Waiting Room Flutter application powered by **Su
 
 ```
 lib/
-├── main.dart                          # App initialization (.env, Supabase, anon auth, Provider)
-├── queue_provider.dart                # State management (ChangeNotifier, stream subscription, queue actions)
+├── main.dart                          # Bootstrap (.env, Supabase, anon auth, Provider)
+├── queue_provider.dart                # Offline-first ChangeNotifier state & sync orchestration
 ├── models/
-│   └── client.dart                    # Immutable Client model (fromMap, toMap, copyWith, equals)
+│   └── client.dart                    # Immutable Client model (remote & local maps, copyWith)
 ├── repositories/
-│   └── clients_repository.dart        # Abstract ClientsRepository & SupabaseClientsRepository v2
+│   └── clients_repository.dart        # ClientsRepository interface & SupabaseClientsRepository v2
+├── services/
+│   ├── local_queue_service.dart       # SQLite persistence (`local_clients` table)
+│   ├── geolocation_service.dart       # Injectable Geolocator wrapper (10s timeout, never throws)
+│   └── connectivity_service.dart      # Injectable connectivity_plus stream & check
 ├── screens/
-│   └── waiting_room_screen.dart       # Main UI with responsive container, queue list & actions
+│   └── waiting_room_screen.dart       # Main UI with offline banner, queue header & list
 ├── theme/
-│   └── app_theme.dart                 # Design tokens (colors, spacing, radius, Material 3 ThemeData)
+│   └── app_theme.dart                 # Material 3 light/dark design tokens
 └── widgets/
-    ├── add_client_bar.dart            # Input text field with controller & add button
-    ├── client_tile.dart               # Individual queue card (#1 Now Serving, time, delete)
-    └── empty_state.dart               # Visual illustration and message when queue is empty
+    ├── add_client_bar.dart            # Input field & Add to Queue button
+    ├── client_tile.dart               # Queue card (position, time, 📍 coords, Waiting to sync)
+    └── empty_state.dart               # Empty queue state
 
 test/
-├── client_test.dart                   # Unit tests for Client model serialization and equality
-├── queue_provider_test.dart           # Unit tests with FakeClientsRepository (trim, remove, next, errors)
-├── supabase_connection_test.dart      # Live database integration test against Supabase
-└── widget_test.dart                   # Widget tests for UI components
+├── client_test.dart                   # Client model & local/remote map tests
+├── local_queue_service_test.dart      # In-memory sqflite_common_ffi tests
+├── queue_provider_test.dart           # Core QueueProvider unit tests
+├── queue_provider_offline_test.dart   # Offline-first, pending delete & reconnect sync tests
+├── queue_provider_geolocation_test.dart # Geolocation capture, null & (0,0) handling tests
+├── supabase_connection_test.dart      # Live Supabase query smoke test
+└── widget_test.dart                   # Widget tests (ClientTile coords, unsynced badge, offline UI)
 ```
 
 ---
 
-## 🚀 Setup & Installation
+## 🚀 Setup & Running on an Android Emulator
 
 ### 1. Prerequisites
 - [Flutter SDK](https://docs.flutter.dev/get-started/install) (Dart 3.x)
-- Google Chrome (for web) and/or Android Studio / device (for Android)
+- Android Studio with an Android Emulator (API 24+ recommended)
 
 ### 2. Configure Environment Secrets
-Create a `.env` file in the project root based on `.env.example`:
+Create a `.env` file in the project root based on `.env.example` (`.env` is gitignored and must never be committed):
 
 ```bash
 cp .env.example .env
@@ -69,60 +116,35 @@ SUPABASE_URL=https://your-project-ref.supabase.co
 SUPABASE_ANON_KEY=your-supabase-publishable-anon-key
 ```
 
-### 3. Install Dependencies
+### 3. Install Dependencies, Analyze & Test
 ```bash
 flutter pub get
-```
-
-### 4. Run Analysis & Tests
-```bash
-# Static analysis
 flutter analyze
-
-# Run unit and widget tests
 flutter test
 ```
 
----
+### 4. Run on an Android Emulator
+1. Start an Android emulator from Android Studio or CLI (`flutter emulators --launch <emulator_id>`).
+2. Set a mock GPS location in the emulator (**Extended controls (`...`) -> Location -> Set Location**).
+3. Launch the app:
+   ```bash
+   flutter run -d android
+   ```
+   *(Note: If you change location permissions in `AndroidManifest.xml` or grant/revoke OS permissions, perform a full app restart rather than hot reload.)*
 
-## 💻 Running the Application
-
-### Run on Chrome (Web)
+### 5. Run on Google Chrome (Web)
 ```bash
 flutter run -d chrome
 ```
-
-### Run on Android
-```bash
-flutter run -d android
-```
-
-### Build for Production Web
-```bash
-flutter build web
-```
+*(Chrome uses the in-memory queue fallback and browser geolocation API instead of SQLite.)*
 
 ---
 
-## 🧪 Manual Two-Device Realtime Test Script
+## ✅ Demo Checklist
 
-To verify real-time cross-client synchronization:
-
-1. **Open Instance A**:
-   - Run the app in Google Chrome (`flutter run -d chrome`) or open a new browser window.
-2. **Open Instance B**:
-   - Open a second browser tab (or Incognito window) to the same local URL, or launch the app on an Android emulator / physical device.
-3. **Step 1 - Add Client on Device A**:
-   - In **Device A**, type `John Doe` into the text box and press Enter or tap **Add to Queue**.
-   - Notice that `John Doe` instantly appears at position `#1` on **Device A**.
-   - Look at **Device B**: `John Doe` automatically appears as `#1` (**Now Serving**) with zero refresh needed.
-4. **Step 2 - Add Second Client on Device B**:
-   - In **Device B**, type `Alice Smith` and tap **Add to Queue**.
-   - `Alice Smith` appears at position `#2` on both **Device B** and **Device A**.
-5. **Step 3 - Next Client Action on Device B**:
-   - On **Device B**, click the **Next Client** button.
-   - `John Doe` is removed from the queue on **Device B**.
-   - Observe **Device A**: `John Doe` disappears instantaneously, and `Alice Smith` moves up to `#1` (**Now Serving**) across both screens.
-6. **Step 4 - Individual Deletion on Device A**:
-   - On **Device A**, tap the trash can icon on `Alice Smith`.
-   - The queue becomes empty on both devices, displaying the empty state (`"No one in queue yet..."`).
+1. **Add a client online** -> appears in Supabase immediately.
+2. **Turn off Wi-Fi/data on the emulator. Add 2 clients** -> they appear instantly with the **"Waiting to sync"** indicator.
+3. **Turn internet back on** -> they upload automatically and the indicator disappears.
+4. **Open the app on another device** -> all clients visible through realtime.
+5. **Location is shown on each tile**, or **"Location not captured"** if permission was denied.
+6. **Remove a client while offline** -> it disappears locally and is deleted remotely after reconnecting.
