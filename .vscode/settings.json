@@ -1,0 +1,7 @@
+{
+  "java.import.gradle.enabled": false,
+  "java.autobuild.enabled": false,
+  "java.configuration.updateBuildConfiguration": "disabled",
+  "java.server.launchMode": "LightWeight",
+  "java.trace.server": "off"
+}

@@ -3,8 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'providers/auth_provider.dart';
+import 'providers/connectivity_provider.dart';
 import 'queue_provider.dart';
-import 'screens/waiting_room_screen.dart';
+import 'screens/auth_gate.dart';
+import 'services/connectivity_service.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
@@ -24,33 +27,27 @@ Future<void> main() async {
     );
   }
 
-  // 3. Initialize Supabase
+  // 3. Initialize Supabase with anonymous key
   await Supabase.initialize(
     url: supabaseUrl,
     // ignore: deprecated_member_use
     anonKey: supabaseAnonKey,
   );
 
-  // 4. Anonymous sign-in if no active session
-  final currentSession = Supabase.instance.client.auth.currentSession;
-  if (currentSession == null) {
-    try {
-      await Supabase.instance.client.auth.signInAnonymously();
-      developer.log('Signed in anonymously to Supabase', name: 'Auth');
-    } catch (e, stackTrace) {
-      developer.log(
-        'Anonymous sign-in skipped or failed: $e',
-        name: 'Auth',
-        error: e,
-        stackTrace: stackTrace,
-      );
-    }
-  }
-
-  // 5. Run App
+  // 4. Run App with Auth, Connectivity, and Queue Providers
   runApp(
-    ChangeNotifierProvider<QueueProvider>(
-      create: (_) => QueueProvider(),
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider<AuthProvider>(
+          create: (_) => AuthProvider(),
+        ),
+        ChangeNotifierProvider<ConnectivityProvider>(
+          create: (_) => ConnectivityProvider(DeviceConnectivityService()),
+        ),
+        ChangeNotifierProvider<QueueProvider>(
+          create: (_) => QueueProvider(),
+        ),
+      ],
       child: const WaitingRoomApp(),
     ),
   );
@@ -67,7 +64,7 @@ class WaitingRoomApp extends StatelessWidget {
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       themeMode: ThemeMode.system,
-      home: const WaitingRoomScreen(),
+      home: const AuthGate(),
     );
   }
 }

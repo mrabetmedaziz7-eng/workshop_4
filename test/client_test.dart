@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:waiting_room_app/models/client.dart';
+import 'package:waiting_room_app/models/sync_status.dart';
 
 void main() {
   group('Client Model Tests', () {
@@ -68,6 +69,92 @@ void main() {
 
       expect(client.toString(), contains('Bob'));
       expect(client.toString(), contains('1'));
+    });
+
+    test('toMap excludes local-only fields is_synced and pending_delete', () {
+      final client = Client(
+        id: '1',
+        name: 'Bob',
+        createdAt: DateTime.utc(2026, 1, 1),
+        lat: 36.8065,
+        lng: 10.1815,
+        isSynced: false,
+        pendingDelete: true,
+      );
+
+      final remoteMap = client.toMap();
+      expect(remoteMap['lat'], 36.8065);
+      expect(remoteMap['lng'], 10.1815);
+      expect(remoteMap.containsKey('is_synced'), isFalse);
+      expect(remoteMap.containsKey('pending_delete'), isFalse);
+    });
+
+    test('toLocalMap and fromLocalMap round-trip preserves sync flags and coordinates', () {
+      final client = Client(
+        id: 'local-1',
+        name: 'Local User',
+        createdAt: DateTime.utc(2026, 1, 1, 12, 0),
+        lat: 36.8065,
+        lng: 10.1815,
+        isSynced: false,
+        pendingDelete: true,
+      );
+
+      final localMap = client.toLocalMap();
+      expect(localMap['is_synced'], 0);
+      expect(localMap['pending_delete'], 1);
+
+      final restored = Client.fromLocalMap(localMap);
+      expect(restored, equals(client));
+    });
+
+    test('copyWith can clear lat and lng to null', () {
+      final client = Client(
+        id: '1',
+        name: 'Bob',
+        createdAt: DateTime.utc(2026, 1, 1),
+        lat: 10.0,
+        lng: 20.0,
+      );
+
+      final cleared = client.copyWith(lat: null, lng: null);
+      expect(cleared.lat, isNull);
+      expect(cleared.lng, isNull);
+    });
+
+    test('hasLocation and locationText reflect coordinate availability', () {
+      final withoutLoc = Client(
+        id: '1',
+        name: 'No Loc',
+        createdAt: DateTime.utc(2026, 1, 1),
+      );
+      expect(withoutLoc.hasLocation, isFalse);
+      expect(withoutLoc.locationText, 'Location not captured');
+
+      final withLoc = withoutLoc.copyWith(lat: 36.80649, lng: 10.18153);
+      expect(withLoc.hasLocation, isTrue);
+      expect(withLoc.locationText, '36.8065, 10.1815');
+    });
+
+    test('toLocalMap preserves location_accuracy_m and sync_status while toSupabaseMap excludes local sync_status', () {
+      final client = Client(
+        id: '1',
+        name: 'Test Client',
+        lat: 36.8065,
+        lng: 10.1815,
+        locationAccuracy: 5.5,
+        createdAt: DateTime.utc(2026, 1, 1),
+        syncStatus: SyncStatus.pending,
+      );
+
+      final localMap = client.toLocalMap();
+      expect(localMap['location_accuracy_m'], 5.5);
+      expect(localMap['sync_status'], 'pending');
+
+      final supabaseMap = client.toSupabaseMap();
+      expect(supabaseMap['location_accuracy_m'], 5.5);
+      expect(supabaseMap.containsKey('sync_status'), isFalse);
+      expect(supabaseMap.containsKey('pending_delete'), isFalse);
     });
   });
 }
