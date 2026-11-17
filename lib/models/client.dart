@@ -12,6 +12,9 @@ class Client {
   final DateTime? locationCapturedAt;
   final SyncStatus syncStatus;
   final bool pendingDelete;
+  final String? userId;
+  final String status;
+  final bool notified;
 
   const Client({
     required this.id,
@@ -24,10 +27,17 @@ class Client {
     SyncStatus? syncStatus,
     bool isSynced = true,
     this.pendingDelete = false,
+    this.userId,
+    this.status = 'accepted',
+    this.notified = false,
   }) : syncStatus = syncStatus ?? (isSynced ? SyncStatus.synced : SyncStatus.pending);
 
   bool get isSynced => syncStatus == SyncStatus.synced;
   bool get hasLocation => lat != null && lng != null;
+
+  bool get isPending => status == 'pending';
+  bool get isAccepted => status == 'accepted';
+  bool get isRejected => status == 'rejected';
 
   String get locationText {
     if (!hasLocation) {
@@ -87,6 +97,11 @@ class Client {
                 ? map['pending_delete'] as bool
                 : (map['pending_delete'] as num?)?.toInt() == 1)
             : false,
+        userId: map['user_id']?.toString(),
+        status: map['status']?.toString() ?? 'accepted',
+        notified: map['notified'] is bool
+            ? map['notified'] as bool
+            : (map['notified'] as num?)?.toInt() == 1,
       );
 
   factory Client.fromSupabaseMap(Map<String, dynamic> map) => Client.fromMap({
@@ -105,6 +120,9 @@ class Client {
         locationCapturedAt: _parseNullableDate(map['location_captured_at']),
         syncStatus: _parseSyncStatus(map),
         pendingDelete: (map['pending_delete'] as num?)?.toInt() == 1,
+        userId: map['user_id']?.toString(),
+        status: map['status']?.toString() ?? 'accepted',
+        notified: (map['notified'] as num?)?.toInt() == 1,
       );
 
   /// Serialization for Supabase (business data only — excludes local sync metadata).
@@ -119,6 +137,9 @@ class Client {
           if (locationCapturedAt != null)
             'location_captured_at': locationCapturedAt!.toUtc().toIso8601String(),
         },
+        if (userId != null) 'user_id': userId,
+        'status': status,
+        'notified': notified,
       };
 
   Map<String, dynamic> toMap() => toSupabaseMap();
@@ -135,6 +156,9 @@ class Client {
         'is_synced': isSynced ? 1 : 0,
         'sync_status': syncStatus.name,
         'pending_delete': pendingDelete ? 1 : 0,
+        'user_id': userId,
+        'status': status,
+        'notified': notified ? 1 : 0,
       };
 
   Client copyWith({
@@ -148,6 +172,9 @@ class Client {
     SyncStatus? syncStatus,
     bool? isSynced,
     bool? pendingDelete,
+    Object? userId = _noChange,
+    String? status,
+    bool? notified,
   }) =>
       Client(
         id: id ?? this.id,
@@ -166,11 +193,14 @@ class Client {
                 ? (isSynced ? SyncStatus.synced : SyncStatus.pending)
                 : this.syncStatus),
         pendingDelete: pendingDelete ?? this.pendingDelete,
+        userId: identical(userId, _noChange) ? this.userId : userId as String?,
+        status: status ?? this.status,
+        notified: notified ?? this.notified,
       );
 
   @override
   String toString() =>
-      'Client(id: $id, name: $name, createdAt: $createdAt, lat: $lat, lng: $lng, syncStatus: ${syncStatus.name})';
+      'Client(id: $id, name: $name, createdAt: $createdAt, status: $status, syncStatus: ${syncStatus.name})';
 
   @override
   bool operator ==(Object other) =>
@@ -186,7 +216,10 @@ class Client {
               locationCapturedAt != null &&
               other.locationCapturedAt!.isAtSameMomentAs(locationCapturedAt!))) &&
       other.syncStatus == syncStatus &&
-      other.pendingDelete == pendingDelete;
+      other.pendingDelete == pendingDelete &&
+      other.userId == userId &&
+      other.status == status &&
+      other.notified == notified;
 
   @override
   int get hashCode => Object.hash(
@@ -199,6 +232,9 @@ class Client {
         locationCapturedAt,
         syncStatus,
         pendingDelete,
+        userId,
+        status,
+        notified,
       );
 }
 

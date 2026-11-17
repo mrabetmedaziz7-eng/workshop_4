@@ -55,6 +55,12 @@ class _TestRepo implements ClientsRepository {
   Future<Client> registerOnServer(Client client) async => client;
   @override
   Future<void> delete(String id) async {}
+  @override
+  Future<void> acceptClient(String id) async {}
+  @override
+  Future<void> rejectClient(String id) async {}
+  @override
+  Future<void> markNotified() async {}
   void dispose() => _controller.close();
 }
 

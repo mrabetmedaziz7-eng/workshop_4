@@ -8,14 +8,14 @@ class ClientTile extends StatelessWidget {
   final Client client;
   final int position;
   final bool isNowServing;
-  final VoidCallback onRemove;
+  final VoidCallback? onRemove;
 
   const ClientTile({
     super.key,
     required this.client,
     required this.position,
     required this.isNowServing,
-    required this.onRemove,
+    this.onRemove,
   });
 
   @override
@@ -214,17 +214,18 @@ class ClientTile extends StatelessWidget {
                 ),
               ),
 
-              // Remove button
-              IconButton(
-                onPressed: onRemove,
-                tooltip: 'Remove ${client.name}',
-                icon: const Icon(Icons.delete_outline_rounded),
-                color: isDark
-                    ? AppColors.darkTextSecondary
-                    : AppColors.lightTextSecondary,
-                hoverColor: AppColors.error.withAlpha(25),
-                highlightColor: AppColors.error.withAlpha(40),
-              ),
+              // Remove button (optional for read-only client view)
+              if (onRemove != null)
+                IconButton(
+                  onPressed: onRemove,
+                  tooltip: 'Remove ${client.name}',
+                  icon: const Icon(Icons.delete_outline_rounded),
+                  color: isDark
+                      ? AppColors.darkTextSecondary
+                      : AppColors.lightTextSecondary,
+                  hoverColor: AppColors.error.withAlpha(25),
+                  highlightColor: AppColors.error.withAlpha(40),
+                ),
             ],
           ),
         ),

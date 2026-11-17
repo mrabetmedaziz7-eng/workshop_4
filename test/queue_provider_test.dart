@@ -106,6 +106,27 @@ class FakeClientsRepository implements ClientsRepository {
     return client.copyWith(isSynced: true);
   }
 
+  @override
+  Future<void> acceptClient(String id) async {
+    final idx = _storage.indexWhere((c) => c.id == id);
+    if (idx != -1) {
+      _storage[idx] = _storage[idx].copyWith(status: 'accepted');
+      _controller.add(List.unmodifiable(_storage));
+    }
+  }
+
+  @override
+  Future<void> rejectClient(String id) async {
+    final idx = _storage.indexWhere((c) => c.id == id);
+    if (idx != -1) {
+      _storage[idx] = _storage[idx].copyWith(status: 'rejected');
+      _controller.add(List.unmodifiable(_storage));
+    }
+  }
+
+  @override
+  Future<void> markNotified() async {}
+
   void dispose() {
     _controller.close();
   }

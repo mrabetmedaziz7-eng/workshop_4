@@ -253,3 +253,36 @@ Workshop 6 extended the Workshop 5 offline-first architecture with:
 5. **Duplicate `LocalQueueService` Instance in Default `QueueProvider` Constructor**:
    - *Issue*: Calling `QueueProvider()` without an explicit `localQueueService` evaluated `localQueueService ?? LocalQueueService()` twice—creating separate instances for `_local` and `_syncService`, which left newly added items stuck in `Waiting to sync` during live Chrome testing.
    - *Fix*: Initialized `_syncService` in the constructor body from the already-assigned `_local` and `_repository` instances, and broadened `PostgrestException` fallback in `SupabaseClientsRepository.registerOnServer`.
+
+
+---
+
+## 12. Workshop 7 — Authentication & Role-Based Access Control (Admin / Client)
+
+### Overview
+Workshop 7 introduces full end-to-end authentication and role-based permissions to the Waiting Room application using **Supabase Auth** (`supabase_flutter`), PostgreSQL Row Level Security (RLS), and custom triggers:
+- **Roles**:
+  - `admin`: Can add clients manually, advance the queue ("Next Client"), remove clients, and approve or reject pending requests.
+  - `client`: Creates an account or signs in. In the waiting room, views the queue in **read-only** mode (no manual add input, no Next Client button, no deletion buttons).
+- **Client Validation & Notification Lifecycle**:
+  - When a client registers, an entry is created in `clients` with `status = 'pending'`, linked to the user account via `user_id`.
+  - While `status == 'pending'`, the client sees an amber validation banner: *"En attente de validation par l'administrateur"*.
+  - The administrator can **Accepter** (status -> `accepted`) or **Refuser** (status -> `rejected`) from a dedicated *"Demandes en attente"* section in the admin interface.
+  - Upon reconnection, if `notified == false` and status is `accepted` or `rejected`, a notification SnackBar is shown (*"Vous avez été accepté dans la file d'attente !"* or rejection notice), and `mark_notified()` RPC sets `notified = true`.
+- **Database Architecture & RLS Security**:
+  - `profiles` table (`id` uuid PK references `auth.users(id) ON DELETE CASCADE`, `name`, `role` in `'admin'`, `'client'`).
+  - Trigger `handle_new_user()` on `auth.users` creates a profile with role `'client'` strictly (ignoring client-submitted metadata).
+  - Helper `is_admin()` in `SECURITY DEFINER` (reading `profiles` with `SET search_path = public` to prevent RLS recursion).
+  - RPC function `mark_notified()` in `SECURITY DEFINER` allowing clients to set `notified = true` on their own row without granting broad table UPDATE privileges.
+  - Re-architected RLS policies on `clients`:
+    - `SELECT`: `is_admin() OR status = 'accepted' OR user_id = auth.uid()`
+    - `INSERT`: `is_admin() OR (user_id = auth.uid() AND status = 'pending')`
+    - `UPDATE`: `is_admin()`
+    - `DELETE`: `is_admin()`
+- **Flutter Implementation**:
+  - `UserProfile` model (`lib/models/user_profile.dart`) and updated `Client` model (`userId`, `status`, `notified`).
+  - `AuthRepository` & `SupabaseAuthRepository` (`signUp`, `signIn`, `signOut`, `getCurrentProfile`, `onAuthStateChange`).
+  - `AuthProvider` (`lib/providers/auth_provider.dart`) managing authentication state and current user profile.
+  - `AuthGate` (`lib/screens/auth_gate.dart`) routing unauthenticated users to `AuthScreen`, clients to `ClientWaitingRoomScreen`, and admins to `WaitingRoomScreen`.
+  - Upgraded `LocalQueueService` SQLite schema version to 3 with `onUpgrade` for `user_id`, `status`, and `notified`.
+  - Comprehensive unit and widget tests (`test/auth_test.dart`) covering models, provider state transitions, queue filtering, and gate routing (58/58 tests passing).

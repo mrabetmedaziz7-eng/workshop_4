@@ -8,6 +8,9 @@ abstract class ClientsRepository {
   Future<void> upsert(Client client);
   Future<Client> registerOnServer(Client client);
   Future<void> delete(String id);
+  Future<void> acceptClient(String id);
+  Future<void> rejectClient(String id);
+  Future<void> markNotified();
 }
 
 class SupabaseClientsRepository implements ClientsRepository {
@@ -38,7 +41,12 @@ class SupabaseClientsRepository implements ClientsRepository {
 
   @override
   Future<void> insert(String name) async {
-    await _client.from('clients').insert({'name': name});
+    await _client.from('clients').insert({
+      'name': name,
+      'status': 'accepted',
+      'user_id': null,
+      'notified': true,
+    });
   }
 
   @override
@@ -48,7 +56,6 @@ class SupabaseClientsRepository implements ClientsRepository {
           .from('clients')
           .upsert(client.toSupabaseMap(includeExtendedLocation: true), onConflict: 'id');
     } on PostgrestException catch (error) {
-      // Fallback if Workshop 6 optional location_accuracy_m / location_captured_at columns are not yet migrated.
       if (error.code == '42703' || error.code == 'PGRST204') {
         await _client
             .from('clients')
@@ -81,7 +88,6 @@ class SupabaseClientsRepository implements ClientsRepository {
       }
       return client.copyWith(isSynced: true);
     } on PostgrestException catch (error) {
-      // Fallback to direct upsert if register_queue_client RPC or extended columns are not deployed yet.
       if (error.code == '42883' ||
           error.code == '42703' ||
           (error.code?.startsWith('PGRST2') ?? false)) {
@@ -95,5 +101,30 @@ class SupabaseClientsRepository implements ClientsRepository {
   @override
   Future<void> delete(String id) async {
     await _client.from('clients').delete().eq('id', id);
+  }
+
+  @override
+  Future<void> acceptClient(String id) async {
+    await _client.from('clients').update({
+      'status': 'accepted',
+      'notified': false,
+    }).eq('id', id);
+  }
+
+  @override
+  Future<void> rejectClient(String id) async {
+    await _client.from('clients').update({
+      'status': 'rejected',
+      'notified': false,
+    }).eq('id', id);
+  }
+
+  @override
+  Future<void> markNotified() async {
+    try {
+      await _client.rpc('mark_notified');
+    } catch (_) {
+      // Fallback if RPC is not yet created
+    }
   }
 }

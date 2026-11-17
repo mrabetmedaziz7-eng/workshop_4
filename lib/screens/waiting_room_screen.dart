@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../models/app_connectivity.dart';
+import '../models/client.dart';
 import '../models/queue_state.dart';
+import '../providers/auth_provider.dart';
 import '../providers/connectivity_provider.dart';
 import '../queue_provider.dart';
 import '../theme/app_theme.dart';
@@ -87,10 +90,67 @@ class WaitingRoomScreen extends StatelessWidget {
     }
   }
 
+  Future<void> _handleAcceptClient(
+      BuildContext context, Client client) async {
+    final provider = context.read<QueueProvider>();
+    try {
+      await provider.acceptClient(client.id);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${client.name} accepté(e) dans la file'),
+            backgroundColor: AppColors.accent,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erreur: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _handleRejectClient(
+      BuildContext context, Client client) async {
+    final provider = context.read<QueueProvider>();
+    try {
+      await provider.rejectClient(client.id);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${client.name} refusé(e)'),
+            backgroundColor: AppColors.warning,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erreur: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
+    String adminName = 'Admin';
+    try {
+      final auth = context.watch<AuthProvider>();
+      adminName = auth.profile?.name ?? 'Admin';
+    } catch (_) {}
 
     return Scaffold(
       appBar: AppBar(
@@ -107,17 +167,30 @@ class WaitingRoomScreen extends StatelessWidget {
                 borderRadius: AppRadius.smRadius,
               ),
               child: const Icon(
-                Icons.meeting_room_rounded,
+                Icons.admin_panel_settings_rounded,
                 color: AppColors.primary,
                 size: 22,
               ),
             ),
             const SizedBox(width: AppSpacing.sm),
-            Text(
-              'Waiting Room',
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Waiting Room',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                Text(
+                  'Admin: $adminName',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: isDark
+                        ? AppColors.darkTextSecondary
+                        : AppColors.lightTextSecondary,
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -146,7 +219,6 @@ class WaitingRoomScreen extends StatelessWidget {
               };
 
               return Container(
-                margin: const EdgeInsets.only(right: AppSpacing.md),
                 padding: const EdgeInsets.symmetric(
                   horizontal: 10,
                   vertical: 5,
@@ -183,6 +255,18 @@ class WaitingRoomScreen extends StatelessWidget {
               );
             },
           ),
+          const SizedBox(width: AppSpacing.xs),
+          // Logout button
+          IconButton(
+            icon: const Icon(Icons.logout_rounded),
+            tooltip: 'Se déconnecter',
+            onPressed: () async {
+              try {
+                await context.read<AuthProvider>().signOut();
+              } catch (_) {}
+            },
+          ),
+          const SizedBox(width: AppSpacing.xs),
         ],
       ),
       body: SafeArea(
@@ -200,13 +284,136 @@ class WaitingRoomScreen extends StatelessWidget {
                   // Offline / Backend availability banner
                   Consumer<QueueProvider>(
                     builder: (context, queue, _) {
-                      final connectivity = _effectiveConnectivity(context, queue);
+                      final connectivity =
+                          _effectiveConnectivity(context, queue);
                       return OfflineBanner(status: connectivity);
                     },
                   ),
-                  // Add Client Input Bar
+                  // Add Client Input Bar (Admin manual add)
                   const AddClientBar(),
                   const SizedBox(height: AppSpacing.md),
+
+                  // Section "Demandes en attente" (pending requests)
+                  Consumer<QueueProvider>(
+                    builder: (context, queue, _) {
+                      final pending = queue.pendingClients;
+                      if (pending.isEmpty) return const SizedBox.shrink();
+
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: AppSpacing.md),
+                        padding: const EdgeInsets.all(AppSpacing.md),
+                        decoration: BoxDecoration(
+                          color: AppColors.warning.withAlpha(15),
+                          borderRadius: AppRadius.lgRadius,
+                          border: Border.all(
+                            color: AppColors.warning.withAlpha(90),
+                            width: 1.2,
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.pending_actions_rounded,
+                                  color: AppColors.warning,
+                                  size: 20,
+                                ),
+                                const SizedBox(width: AppSpacing.sm),
+                                Text(
+                                  'Demandes en attente (${pending.length})',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 15,
+                                    color: AppColors.warning,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: AppSpacing.sm),
+                            ...pending.map((client) {
+                              final timeStr = DateFormat('HH:mm')
+                                  .format(client.createdAt.toLocal());
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 6),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: AppSpacing.md,
+                                  vertical: AppSpacing.sm,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isDark
+                                      ? AppColors.darkCard
+                                      : Colors.white,
+                                  borderRadius: AppRadius.mdRadius,
+                                  border: Border.all(
+                                    color: isDark
+                                        ? AppColors.darkBorder
+                                        : AppColors.lightBorder,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            client.name,
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w600,
+                                              fontSize: 14,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '$timeStr · ${client.locationText}',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: isDark
+                                                  ? AppColors.darkTextSecondary
+                                                  : AppColors
+                                                      .lightTextSecondary,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    // Accept button
+                                    IconButton.filled(
+                                      onPressed: () =>
+                                          _handleAcceptClient(context, client),
+                                      icon: const Icon(Icons.check, size: 18),
+                                      style: IconButton.styleFrom(
+                                        backgroundColor: AppColors.accent,
+                                        foregroundColor: Colors.white,
+                                        minimumSize: const Size(36, 36),
+                                      ),
+                                      tooltip: 'Accepter',
+                                    ),
+                                    const SizedBox(width: 8),
+                                    // Reject button
+                                    IconButton.filled(
+                                      onPressed: () =>
+                                          _handleRejectClient(context, client),
+                                      icon: const Icon(Icons.close, size: 18),
+                                      style: IconButton.styleFrom(
+                                        backgroundColor: AppColors.error,
+                                        foregroundColor: Colors.white,
+                                        minimumSize: const Size(36, 36),
+                                      ),
+                                      tooltip: 'Refuser',
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
 
                   // Action Header: Next Client button & Queue Count
                   Consumer<QueueProvider>(
@@ -255,13 +462,13 @@ class WaitingRoomScreen extends StatelessWidget {
                               onPressed: hasClients
                                   ? () => _handleNextClient(context)
                                   : null,
-                              icon: const Icon(Icons.skip_next_rounded, size: 20),
+                              icon:
+                                  const Icon(Icons.skip_next_rounded, size: 20),
                               label: const Text('Next Client'),
                               style: FilledButton.styleFrom(
                                 backgroundColor: AppColors.primary,
-                                disabledBackgroundColor: isDark
-                                    ? Colors.white10
-                                    : Colors.black12,
+                                disabledBackgroundColor:
+                                    isDark ? Colors.white10 : Colors.black12,
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: AppSpacing.lg,
                                   vertical: 12,
@@ -283,7 +490,8 @@ class WaitingRoomScreen extends StatelessWidget {
                     child: Consumer<QueueProvider>(
                       builder: (context, queue, _) {
                         // 1. Loading state
-                        if ((queue.isLoading || queue.state == QueueState.loading) &&
+                        if ((queue.isLoading ||
+                                queue.state == QueueState.loading) &&
                             queue.clients.isEmpty) {
                           return const LoadingWidget(
                             message: 'Connecting to waiting room...',
@@ -291,7 +499,8 @@ class WaitingRoomScreen extends StatelessWidget {
                         }
 
                         // 2. Error state
-                        if (queue.errorMessage != null && queue.clients.isEmpty) {
+                        if (queue.errorMessage != null &&
+                            queue.clients.isEmpty) {
                           return Center(
                             child: Padding(
                               padding: const EdgeInsets.all(AppSpacing.lg),
@@ -299,7 +508,8 @@ class WaitingRoomScreen extends StatelessWidget {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Container(
-                                    padding: const EdgeInsets.all(AppSpacing.md),
+                                    padding:
+                                        const EdgeInsets.all(AppSpacing.md),
                                     decoration: BoxDecoration(
                                       color: AppColors.errorContainer,
                                       shape: BoxShape.circle,
@@ -313,7 +523,8 @@ class WaitingRoomScreen extends StatelessWidget {
                                   const SizedBox(height: AppSpacing.md),
                                   Text(
                                     'Connection error',
-                                    style: theme.textTheme.titleMedium?.copyWith(
+                                    style:
+                                        theme.textTheme.titleMedium?.copyWith(
                                       fontWeight: FontWeight.w700,
                                     ),
                                   ),
@@ -349,7 +560,8 @@ class WaitingRoomScreen extends StatelessWidget {
                             physics: const AlwaysScrollableScrollPhysics(
                               parent: BouncingScrollPhysics(),
                             ),
-                            itemCount: queue.clients.length + (showLoadMore ? 1 : 0),
+                            itemCount:
+                                queue.clients.length + (showLoadMore ? 1 : 0),
                             itemBuilder: (context, index) {
                               if (index == queue.clients.length) {
                                 return Padding(
@@ -358,21 +570,27 @@ class WaitingRoomScreen extends StatelessWidget {
                                   ),
                                   child: Center(
                                     child: queue.isLoadingMore
-                                        ? const CircularProgressIndicator(strokeWidth: 2.5)
-                                        : OutlinedButton.icon(
-                                            onPressed: () => queue.loadMore(),
-                                            icon: const Icon(Icons.expand_more_rounded),
-                                            label: const Text('Load More'),
+                                        ? const SizedBox(
+                                            width: 24,
+                                            height: 24,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          )
+                                        : TextButton(
+                                            onPressed: queue.loadMore,
+                                            child: const Text('Load More'),
                                           ),
                                   ),
                                 );
                               }
+
                               final client = queue.clients[index];
+                              final isFirst = index == 0;
                               return ClientTile(
-                                key: ValueKey(client.id),
                                 client: client,
                                 position: index + 1,
-                                isNowServing: index == 0,
+                                isNowServing: isFirst,
                                 onRemove: () => _handleRemoveClient(
                                   context,
                                   client.id,

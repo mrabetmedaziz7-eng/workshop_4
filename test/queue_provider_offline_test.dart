@@ -109,6 +109,27 @@ class TrackingClientsRepository implements ClientsRepository {
     _controller.add(List.unmodifiable(remoteClients));
   }
 
+  @override
+  Future<void> acceptClient(String id) async {
+    final idx = remoteClients.indexWhere((c) => c.id == id);
+    if (idx != -1) {
+      remoteClients[idx] = remoteClients[idx].copyWith(status: 'accepted');
+      _controller.add(List.unmodifiable(remoteClients));
+    }
+  }
+
+  @override
+  Future<void> rejectClient(String id) async {
+    final idx = remoteClients.indexWhere((c) => c.id == id);
+    if (idx != -1) {
+      remoteClients[idx] = remoteClients[idx].copyWith(status: 'rejected');
+      _controller.add(List.unmodifiable(remoteClients));
+    }
+  }
+
+  @override
+  Future<void> markNotified() async {}
+
   void dispose() => _controller.close();
 }
 

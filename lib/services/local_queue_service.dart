@@ -7,7 +7,7 @@ import '../models/client.dart';
 import '../models/sync_status.dart';
 
 class LocalQueueService {
-  static const int schemaVersion = 2;
+  static const int schemaVersion = 3;
 
   final Database? providedDatabase;
   final String? databasePath;
@@ -68,7 +68,10 @@ class LocalQueueService {
         created_at TEXT NOT NULL,
         is_synced INTEGER NOT NULL DEFAULT 0,
         sync_status TEXT NOT NULL DEFAULT 'pending',
-        pending_delete INTEGER NOT NULL DEFAULT 0
+        pending_delete INTEGER NOT NULL DEFAULT 0,
+        user_id TEXT,
+        status TEXT NOT NULL DEFAULT 'accepted',
+        notified INTEGER NOT NULL DEFAULT 0
       )
     ''');
   }
@@ -83,6 +86,11 @@ class LocalQueueService {
       await db.execute(
         "UPDATE local_clients SET sync_status = CASE WHEN is_synced = 1 THEN 'synced' ELSE 'pending' END",
       );
+    }
+    if (oldVersion < 3) {
+      await db.execute('ALTER TABLE local_clients ADD COLUMN user_id TEXT');
+      await db.execute("ALTER TABLE local_clients ADD COLUMN status TEXT NOT NULL DEFAULT 'accepted'");
+      await db.execute('ALTER TABLE local_clients ADD COLUMN notified INTEGER NOT NULL DEFAULT 0');
     }
   }
 
@@ -100,6 +108,8 @@ class LocalQueueService {
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
+
+  Future<void> updateClientLocally(Client client) => insertClientLocally(client);
 
   Future<Client?> getClientById(String id) async {
     if (useMemoryFallback) {

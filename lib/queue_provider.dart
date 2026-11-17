@@ -84,7 +84,13 @@ class QueueProvider extends ChangeNotifier {
   }
 
   Future<void> get initialized => _initFuture ?? Future.value();
-  List<Client> get clients => List.unmodifiable(_clients);
+  List<Client> get allClients => List.unmodifiable(_clients);
+  List<Client> get clients =>
+      List.unmodifiable(_clients.where((client) => client.isAccepted).toList());
+  List<Client> get pendingClients =>
+      List.unmodifiable(_clients.where((client) => client.isPending).toList());
+  List<Client> get rejectedClients =>
+      List.unmodifiable(_clients.where((client) => client.isRejected).toList());
   QueueState get state => _state;
   AppConnectivity get connectivityStatus => _connectivityStatus;
   bool get hasMore => _hasMore;
@@ -92,11 +98,49 @@ class QueueProvider extends ChangeNotifier {
   bool get isLoading => _isLoading;
   bool get isOnline => _isOnline;
   String? get errorMessage => _errorMessage;
-  bool get isEmpty => _clients.isEmpty;
-  int get queueLength => _clients.length;
+  bool get isEmpty => clients.isEmpty;
+  int get queueLength => clients.length;
   int get pendingSyncCount => _clients.where((client) => !client.isSynced).length;
   int get unsyncedCount => pendingSyncCount;
-  Client? get currentClient => _clients.isNotEmpty ? _clients.first : null;
+  Client? get currentClient => clients.isNotEmpty ? clients.first : null;
+
+  Client? getMyClient(String? userId) {
+    if (userId == null) return null;
+    for (final client in _clients) {
+      if (client.userId == userId) return client;
+    }
+    return null;
+  }
+
+  Future<void> acceptClient(String id) async {
+    await _repository.acceptClient(id);
+    final index = _clients.indexWhere((c) => c.id == id);
+    if (index != -1) {
+      _clients[index] = _clients[index].copyWith(status: 'accepted', notified: false);
+      await _local.updateClientLocally(_clients[index]);
+      _notify();
+    }
+  }
+
+  Future<void> rejectClient(String id) async {
+    await _repository.rejectClient(id);
+    final index = _clients.indexWhere((c) => c.id == id);
+    if (index != -1) {
+      _clients[index] = _clients[index].copyWith(status: 'rejected', notified: false);
+      await _local.updateClientLocally(_clients[index]);
+      _notify();
+    }
+  }
+
+  Future<void> markNotified(String clientId) async {
+    await _repository.markNotified();
+    final index = _clients.indexWhere((c) => c.id == clientId);
+    if (index != -1) {
+      _clients[index] = _clients[index].copyWith(notified: true);
+      await _local.updateClientLocally(_clients[index]);
+      _notify();
+    }
+  }
 
   Future<void> initialize() async {
     await _refreshLocal();
@@ -366,8 +410,8 @@ class QueueProvider extends ChangeNotifier {
   }
 
   Future<void> nextClient() async {
-    if (_clients.isEmpty) return;
-    await removeClient(_clients.first.id);
+    if (clients.isEmpty) return;
+    await removeClient(clients.first.id);
   }
 
   Future<void> retry() async {

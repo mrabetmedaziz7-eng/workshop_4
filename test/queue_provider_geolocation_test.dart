@@ -73,6 +73,27 @@ class _InMemoryRepo implements ClientsRepository {
     _controller.add(List.unmodifiable(items));
   }
 
+  @override
+  Future<void> acceptClient(String id) async {
+    final idx = items.indexWhere((c) => c.id == id);
+    if (idx != -1) {
+      items[idx] = items[idx].copyWith(status: 'accepted');
+      _controller.add(List.unmodifiable(items));
+    }
+  }
+
+  @override
+  Future<void> rejectClient(String id) async {
+    final idx = items.indexWhere((c) => c.id == id);
+    if (idx != -1) {
+      items[idx] = items[idx].copyWith(status: 'rejected');
+      _controller.add(List.unmodifiable(items));
+    }
+  }
+
+  @override
+  Future<void> markNotified() async {}
+
   void dispose() => _controller.close();
 }
 
